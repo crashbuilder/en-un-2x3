@@ -1,0 +1,73 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: fonsi_user
+      POSTGRES_PASSWORD: fonsi_password
+      POSTGRES_DB: en_un_2x3
+    ports:
+      - "5435:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fonsi_user -d en_un_2x3"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    command: redis-server --appendonly yes
+
+  openclaw:
+    build:
+      context: ./bot
+      dockerfile: Dockerfile
+    environment:
+      - DB_HOST=postgres
+      - DB_USER=fonsi_user
+      - DB_PASSWORD=fonsi_password
+      - DB_NAME=en_un_2x3
+      - REDIS_URL=redis://redis:6379
+      - NODE_PATH=/app/node_modules
+      - OPENAI_API_KEY=${LLM_API_KEY:-""}
+      - LLM_API_KEY=${LLM_API_KEY:-""}
+      - LLM_BASE_URL=${LLM_BASE_URL:-""}
+      - LLM_MODEL=${LLM_MODEL:-""}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-""}
+    volumes:
+      - ./workspace-fonsi:/workspace
+      - ./bot:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    environment:
+      - DB_HOST=postgres
+      - DB_USER=fonsi_user
+      - DB_PASSWORD=fonsi_password
+      - DB_NAME=en_un_2x3
+      - DB_PORT=5432
+    ports:
+      - "8507:8501"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  redisdata:

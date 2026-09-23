@@ -1,0 +1,194 @@
+﻿{
+  proyecto: {
+    nombre: En un 2x3,
+    descripcion: Plataforma autonoma y chatbot de mensajeria, domicilios, mandados, transporte de personas y comercio local con IA,
+    ubicacion: Fonseca, La Guajira, Colombia,
+    nombre_bot: Fonsi,
+    slogan: Que deseas? Te lo llevo en un 2x3,
+    moneda_principal: COP,
+    soporte_multimoneda: [USD, COP],
+    version: 1.0.0,
+    fecha_actualizacion: 2026-09-23,
+    vps_ip: 89.117.72.233,
+    dashboard_url: http://89.117.72.233:8507,
+    bot_telegram: @Fonsi2x3_bot
+  },
+  stack_tecnologico: {
+    backend_bot: Node.js 20+ con TypeScript y OpenClaw / Telegraf,
+    ia_core: Google Gemini 2.5 Flash con soporte de Vision OCR,
+    base_de_datos: PostgreSQL 16 Relacional,
+    cache_y_sesiones: Redis 7 Alpine,
+    panel_de_control: Streamlit (Python 3.11) con metricas en tiempo real,
+    contenedorizacion: Docker & Docker Compose,
+    despliegue: Ubuntu 24.04 LTS en VPS Hostinger (89.117.72.233)
+  },
+  tarifas_y_reglas_negocio: {
+    mototaxi_urbano_base: 4000,
+    carro_urbano_base: 8000,
+    mandado_urbano_base: 6000,
+    domicilio_comida_base: 4000,
+    recargo_nocturno: 1000,
+    recargo_lluvia: 2000,
+    rutas_intermunicipales: {
+      fonseca_distraccion: 8000,
+      fonseca_san_juan: 15000,
+      fonseca_barrancas: 12000,
+      fonseca_villanueva: 25000,
+      fonseca_riohacha: 40000,
+      fonseca_valledupar: 35000
+    },
+    planes_publicidad: {
+      bronce: { precio: 50000, duracion_dias: 7, menciones_estados: 3 },
+      plata: { precio: 80000, duracion_dias: 15, menciones_estados: 8 },
+      oro: { precio: 110000, duracion_dias: 30, menciones_estados: 20 }
+    }
+  },
+  fases: [
+    {
+      fase: 0,
+      nombre: Fundamentos, Infraestructura Core y Personalidad,
+      estado: COMPLETADA,
+      progreso: 100,
+      objetivo: Establecer la infraestructura base, el cerebro de Fonsi y conectar los servicios minimos viables.,
+      entregables: [
+        Stack Docker: PostgreSQL 16, Redis 7 y Node.js 20+ en red interna bridge,
+        Esquema relacional completo: users, merchants, menu_items, orders, order_items, couriers, receipts, ledger, settlement_batches, trips, ad_contracts, status_posts,
+        Personalidad de Fonsi (SOUL.md / system prompt): Servidor amable guajiro, bilingue, calculos precisos, sin la frase 'De Una',
+        Integracion IA: Gemini 2.5 Flash con contexto de base de datos en tiempo real,
+        Pruebas en Telegram (@Fonsi2x3_bot) listas para migracion transparente a WhatsApp
+      ],
+      criterios_aceptacion: [
+        Contenedores Docker levantados y saludables,
+        Migraciones SQL aplicadas sin errores,
+        Bot responde en Telegram con la promesa de marca
+      ]
+    },
+    {
+      fase: 1,
+      nombre: Atencion al Cliente, Catalogo en Vivo y Toma de Pedidos,
+      estado: COMPLETADA,
+      progreso: 100,
+      objetivo: Lograr que Fonsi atienda a los clientes de inicio a fin para comida y productos sin intervencion humana.,
+      entregables: [
+        Lectura de catalogos y menus de restaurantes aliados (La Jefa, Loquillo, etc.),
+        Gestion de carrito y generacion de ordenes con codigo unico (FX-####),
+        Conversion a USD para turistas cuando sea solicitado,
+        Manejo de espera silenciosa y resiliencia ante saturacion,
+        Creacion de registros formales en tabla 'orders' y 'order_items'
+      ],
+      tools_implementadas: [
+        catalog_browse.ts,
+        order_create.ts,
+        order_status.ts
+      ],
+      criterios_aceptacion: [
+        Generacion exitosa de orden FX con calculo exacto de subtotal + domicilio,
+        Consulta de estado de orden por parte del cliente
+      ]
+    },
+    {
+      fase: 2,
+      nombre: OCR con IA Visual, Antifraude y Libro Mayor (Ledger),
+      estado: COMPLETADA,
+      progreso: 100,
+      objetivo: Validar comprobantes de pago (Nequi, Daviplata, Bre-B) y registrar asientos contables balanceados en partida doble.,
+      entregables: [
+        Modulo OCR con IA de vision para comprobantes Nequi, Daviplata, Bancolombia y Bre-B,
+        Filtro antifraude: verificacion de fecha actual, monto exacto, numero de referencia unico y destinatario,
+        Libro mayor contable en partida doble con validacion estricta de suma(debitos) == suma(creditos),
+        Modulo de liquidacion diaria para mensajeros (cierre de caja, comisiones y cuadre de efectivo)
+      ],
+      tools_implementadas: [
+        receipt_ocr.ts,
+        payment_verify.ts,
+        ledger_post.ts,
+        courier_settle.ts
+      ],
+      criterios_aceptacion: [
+        Lectura correcta de pantallazos de transferencia,
+        Rechazo de comprobantes duplicados o falsificados,
+        Asientos de diario perfectamente balanceados
+      ]
+    },
+    {
+      fase: 3,
+      nombre: Mandados, Mototaxis, Logistica y Relay Anonimo,
+      estado: COMPLETADA,
+      progreso: 100,
+      objetivo: Cotizacion de transporte y mandados 'de lo que sea', calculo de ETAs y mensajeria anonima cliente-conductor.,
+      entregables: [
+        Cotizador urbano para mototaxi (.000), carro (.000), mandados (.000) y rutas intermunicipales,
+        Calculo de tiempos estimados de llegada (ETA) basados en zonas y barrios de Fonseca,
+        Sistema de relay anonimo de mensajes entre cliente y repartidor protegiendo la privacidad,
+        Asignacion de viajes en la tabla 'trips' con control de estado (requested, accepted, in_progress, completed)
+      ],
+      tools_implementadas: [
+        fare_quote.ts,
+        eta_calculate.ts,
+        relay_message.ts
+      ],
+      criterios_aceptacion: [
+        Cotizaciones instantaneas con desglose de recargos,
+        Calculo de ETA coherente con el trafico local,
+        Reenvio de mensajes enmascarados entre usuario y conductor
+      ]
+    },
+    {
+      fase: 4,
+      nombre: Publicidad, Pauta de Comercios y Generacion de Estados,
+      estado: COMPLETADA,
+      progreso: 100,
+      objetivo: Monetizacion publicitaria mediante contratos de pauta y publicacion periodica de estados en WhatsApp.,
+      entregables: [
+        Gestion de contratos de pauta (Planes Bronce , Plata , Oro ),
+        Publicacion y programacion de estados promocionales en 'status_posts',
+        Marcado de menciones patrocinadas (sponsored: true) para transparencia con la comunidad,
+        Gestion de vigencias y conteo de impresiones/menciones restantes
+      ],
+      tools_implementadas: [
+        ad_close.ts,
+        status_publish.ts
+      ],
+      criterios_aceptacion: [
+        Creacion de contratos publicitarios vinculados a comercios,
+        Generacion automatica de copy optimizado para estados
+      ]
+    },
+    {
+      fase: 5,
+      nombre: Plataforma de Control Web (Streamlit) y Despliegue VPS,
+      estado: COMPLETADA,
+      progreso: 100,
+      objetivo: Panel administrativo interactivo en tiempo real y despliegue robusto 24/7 en el servidor de produccion.,
+      entregables: [
+        Dashboard Web interactivo desarrollado en Streamlit montado en el puerto 8507,
+        Monitoreo de metricas clave (KPIs): Total Ordenes, Viajes, Balance de Caja, Mensajeros Activos,
+        Tablas dinamicas y visualizacion del Libro Mayor (Ledger), Comprobantes OCR y Contratos de Pauta,
+        Visualizador del Plan de Fases JSON integrado en la interfaz web,
+        Despliegue exitoso en Docker en el VPS 89.117.72.233 con persistencia de datos
+      ],
+      criterios_aceptacion: [
+        Acceso web fluido en http://89.117.72.233:8507,
+        Sincronizacion instantanea con PostgreSQL en produccion,
+        Servicios activos 24/7 sin caidas
+      ]
+    }
+  ],
+  entorno_produccion: {
+    ip: 89.117.72.233,
+    usuario: root,
+    directorio_base: /root/en-un-2x3,
+    puertos_mapeados: {
+      streamlit_dashboard: 8507,
+      bot_api_node: 3000,
+      postgresql_host: 5435,
+      redis_host: 6379
+    },
+    contenedores_docker: [
+      en-un-2x3-openclaw-1,
+      en-un-2x3-dashboard-1,
+      en-un-2x3-postgres-1,
+      en-un-2x3-redis-1
+    ]
+  }
+}

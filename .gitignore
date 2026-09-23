@@ -1,0 +1,23 @@
+﻿# Dependencias
+node_modules/
+dist/
+build/
+__pycache__/
+*.pyc
+
+# Variables de entorno y credenciales
+.env
+.env.local
+*.pem
+*.key
+*.log
+
+# Docker data volumes
+postgres_data/
+redis_data/
+
+# Sistema y editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
