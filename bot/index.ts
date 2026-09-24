@@ -170,10 +170,21 @@ interface PendingAction {
   step: 'awaiting_origin' | 'awaiting_destination' | 'awaiting_details' | 'awaiting_payment';
 }
 
+interface DriverRegistration {
+  step: 'reg_name' | 'reg_phone' | 'reg_vehicle_type' | 'reg_model_color' | 'reg_plate';
+  name?: string;
+  wa_phone?: string;
+  vehicle_type?: 'moto' | 'carro';
+  vehicle_model?: string;
+  color?: string;
+  plate?: string;
+}
+
 interface SessionData {
   history: any[];
   lastActivity: number;
   pendingAction?: PendingAction | null;
+  driverReg?: DriverRegistration | null;
   timeoutNotified?: boolean;
 }
 
@@ -299,6 +310,35 @@ async function processOrderCreation(userId: string, userName: string, orderData:
         "UPDATE orders SET courier_id = $1 WHERE id = $2",
         [courierInfo.id, createdOrder.id]
       );
+
+      // Si el conductor tiene Telegram vinculado, notificarle de inmediato
+      if (courierInfo.tg_user_id) {
+        try {
+          const isCar = isCarOrder;
+          const origStr = typeof origin === 'string' ? origin : (origin?.label || 'Fonseca');
+          const destStr = typeof destination === 'string' ? destination : (destination?.label || 'Fonseca');
+          
+          let alertMsg = `🔔 <b>¡NUEVO SERVICIO ASIGNADO!</b> ${isCar ? '🚗💨' : '🛵💨'}\n\n`;
+          alertMsg += `📋 <b>Código:</b> <code>${createdOrder.code}</code>\n`;
+          alertMsg += `👤 <b>Cliente:</b> ${userName || 'Cliente'}\n`;
+          alertMsg += `📍 <b>Recogida:</b> ${origStr}\n`;
+          alertMsg += `🏁 <b>Destino:</b> ${destStr}\n`;
+          alertMsg += `💵 <b>Total a cobrar:</b> $${total.toLocaleString('es-CO')} COP (${paymentMethod === 'cash' ? 'Efectivo en mano' : 'Transferencia Bre-B'})\n\n`;
+          alertMsg += `👉 <i>Dirígete al punto de recogida. Cuando entregues, pulsa el botón abajo:</i>`;
+
+          const mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destStr)}`;
+
+          await bot.telegram.sendMessage(courierInfo.tg_user_id, alertMsg, {
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard([
+              [Markup.button.url('🗺️ Navegar en Google Maps', mapsUrl)],
+              [Markup.button.callback(`✅ Marcar Entregado (${createdOrder.code})`, `courier_delivered_${createdOrder.code}`)]
+            ])
+          });
+        } catch (tgErr: any) {
+          console.warn("No se pudo notificar al conductor por Telegram:", tgErr?.message);
+        }
+      }
     }
 
     return {
@@ -444,9 +484,170 @@ bot.on('edited_message', async (ctx) => {
 });
 
 // ==========================================
-// VINCULACIÓN Y TURNO DE CONDUCTORES
+// PORTAL INTERACTIVO DEL CONDUCTOR
 // ==========================================
-bot.command(['conductor', 'turno', 'chofer'], async (ctx) => {
+async function showCourierPanel(ctx: any, userId: string) {
+  try {
+    const courierRes = await dbClient.query(
+      "SELECT * FROM couriers WHERE tg_user_id = $1 OR wa_phone = $2 LIMIT 1",
+      [userId, userId]
+    );
+
+    if (courierRes.rows.length === 0) {
+      // Conductor no registrado o no vinculado
+      let msg = `🛵 <b>Portal de Conductores — En un 2x3</b>\n\n`;
+      msg += `Tu cuenta de Telegram aún no está vinculada a un perfil de conductor.\n\n`;
+      msg += `¿Qué deseas hacer para empezar a recibir carreras y domicilios?`;
+
+      return safeReply(ctx, msg, Markup.inlineKeyboard([
+        [Markup.button.callback('📝 Registrarme como Nuevo Conductor', 'start_driver_reg')],
+        [Markup.button.callback('🔗 Vincular Conductor de la Lista', 'list_existing_drivers')],
+        [Markup.button.callback('🔙 Menú Principal', 'btn_main_menu')]
+      ]));
+    }
+
+    const courier = courierRes.rows[0];
+
+    // Asegurar que tg_user_id esté guardado
+    if (!courier.tg_user_id) {
+      await dbClient.query("UPDATE couriers SET tg_user_id = $1 WHERE id = $2", [userId, courier.id]);
+    }
+
+    // Consultar si tiene un pedido activo en curso
+    const activeOrderRes = await dbClient.query(`
+      SELECT code, type, status, total, payment_method, origin, destination, created_at
+      FROM orders 
+      WHERE courier_id = $1 AND status IN ('CONFIRMED', 'PREPARING', 'ON_THE_WAY')
+      ORDER BY created_at DESC LIMIT 1
+    `, [courier.id]);
+
+    const isCar = courier.vehicle_type === 'carro';
+
+    let msg = `🛵 <b>Panel del Conductor — En un 2x3</b>\n\n`;
+    msg += `👤 <b>Conductor:</b> ${courier.name}\n`;
+    msg += `📱 <b>WhatsApp:</b> <code>${courier.wa_phone}</code>\n`;
+    msg += `${isCar ? '🚗' : '🏍️'} <b>Vehículo:</b> ${courier.vehicle_model || courier.vehicle} (${courier.color || 'Blanco'})\n`;
+    msg += `🏷️ <b>Placa:</b> <code>${courier.plate || '-'}</code>\n`;
+    msg += `⭐ <b>Calificación:</b> ${courier.rating || '5.0'} ⭐\n`;
+    msg += `📡 <b>Estado Turno:</b> ${courier.is_active ? '🟢 <b>EN TURNO (ACTIVO)</b>' : '🔴 <b>FUERA DE TURNO (INACTIVO)</b>'}\n\n`;
+
+    if (activeOrderRes.rows.length > 0) {
+      const o = activeOrderRes.rows[0];
+      const destStr = typeof o.destination === 'string' ? o.destination : (o.destination?.label || 'Destino');
+      const origStr = typeof o.origin === 'string' ? o.origin : (o.origin?.label || 'Origen');
+      msg += `📦 <b>SERVICIO ASIGNADO [${o.code}]:</b>\n`;
+      msg += `📍 <b>Recogida:</b> ${origStr}\n`;
+      msg += `🏁 <b>Destino:</b> ${destStr}\n`;
+      msg += `💵 <b>A cobrar:</b> $${Number(o.total).toLocaleString('es-CO')} COP (${o.payment_method === 'cash' ? 'Efectivo en mano' : 'Digital Bre-B'})\n\n`;
+    }
+
+    if (courier.is_active) {
+      msg += `📍 <i>Para que los clientes vean tu ubicación en tiempo real:</i>\n`;
+      msg += `👉 Toca el botón de adjuntar (📎) ➔ <b>Ubicación ➔ Compartir en tiempo real</b> (8 horas).\n\n`;
+    }
+
+    const buttons = [];
+    if (activeOrderRes.rows.length > 0) {
+      const o = activeOrderRes.rows[0];
+      const destStr = typeof o.destination === 'string' ? o.destination : (o.destination?.label || 'Destino');
+      const mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destStr)}`;
+      buttons.push([Markup.button.url('🗺️ Navegar en Maps', mapsUrl)]);
+      buttons.push([Markup.button.callback(`✅ Marcar Entregado (${o.code})`, `courier_delivered_${o.code}`)]);
+    }
+
+    if (courier.is_active) {
+      buttons.push([Markup.button.callback('🔴 Pausar Turno (Desactivarme)', `courier_toggle_shift_${courier.id}_off`)]);
+    } else {
+      buttons.push([Markup.button.callback('🟢 Iniciar Turno (Activarme)', `courier_toggle_shift_${courier.id}_on`)]);
+    }
+
+    buttons.push([Markup.button.callback('💰 Mi Liquidación y Ganancias de Hoy', `courier_my_earnings_${courier.id}`)]);
+    buttons.push([Markup.button.url('🗺️ Ver Radar en Vivo', 'http://89.117.72.233:3000')]);
+    buttons.push([Markup.button.callback('🔙 Menú Principal', 'btn_main_menu')]);
+
+    await safeReply(ctx, msg, Markup.inlineKeyboard(buttons));
+  } catch (err: any) {
+    console.error("Error en showCourierPanel:", err);
+    await safeReply(ctx, 'Error al abrir el panel de conductor.');
+  }
+}
+
+bot.command(['conductor', 'turno', 'chofer', 'panel_conductor'], async (ctx) => {
+  const userId = ctx.from.id.toString();
+  await showCourierPanel(ctx, userId);
+});
+
+bot.action('btn_courier_panel', async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id.toString();
+  await showCourierPanel(ctx, userId);
+});
+
+// Iniciar Registro de Conductor
+bot.action('start_driver_reg', async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id.toString();
+  const session = getOrCreateSession(userId);
+  session.pendingAction = null;
+  session.driverReg = { step: 'reg_name' };
+
+  const msg = 
+    "📝 <b>Registro de Conductor — Paso 1 de 5:</b>\n\n" +
+    "¿Cuál es tu <b>Nombre y Apellidos</b> completos?\n\n" +
+    "<i>(Escribe tu nombre en el chat)</i>";
+
+  await safeReply(ctx, msg, Markup.inlineKeyboard([
+    [Markup.button.callback('❌ Cancelar Registro', 'cancel_driver_reg')]
+  ]));
+});
+
+bot.action('cancel_driver_reg', async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id.toString();
+  const session = getOrCreateSession(userId);
+  session.driverReg = null;
+  await safeReply(ctx, '❌ Registro cancelado.', Markup.inlineKeyboard([
+    [Markup.button.callback('🛵 Menú Principal', 'btn_main_menu')]
+  ]));
+});
+
+bot.action('reg_veh_moto', async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id.toString();
+  const session = getOrCreateSession(userId);
+  if (session.driverReg) {
+    session.driverReg.vehicle_type = 'moto';
+    session.driverReg.step = 'reg_model_color';
+    const msg = 
+      "🏍️ <b>Paso 4 de 5:</b>\n\n" +
+      "¿Qué marca/modelo y color es tu <b>Moto</b>?\n\n" +
+      "<i>(Ejemplo: Bajaj Boxer CT 100 Negra)</i>";
+    await safeReply(ctx, msg, Markup.inlineKeyboard([
+      [Markup.button.callback('❌ Cancelar Registro', 'cancel_driver_reg')]
+    ]));
+  }
+});
+
+bot.action('reg_veh_carro', async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id.toString();
+  const session = getOrCreateSession(userId);
+  if (session.driverReg) {
+    session.driverReg.vehicle_type = 'carro';
+    session.driverReg.step = 'reg_model_color';
+    const msg = 
+      "🚗 <b>Paso 4 de 5:</b>\n\n" +
+      "¿Qué marca/modelo y color es tu <b>Carro</b>?\n\n" +
+      "<i>(Ejemplo: Chevrolet Sail Gris Plata)</i>";
+    await safeReply(ctx, msg, Markup.inlineKeyboard([
+      [Markup.button.callback('❌ Cancelar Registro', 'cancel_driver_reg')]
+    ]));
+  }
+});
+
+// Listar conductores existentes para vincular
+bot.action('list_existing_drivers', async (ctx) => {
+  await ctx.answerCbQuery();
   try {
     const couriersRes = await dbClient.query("SELECT * FROM couriers ORDER BY name ASC");
     const buttons = couriersRes.rows.map(c => [
@@ -455,12 +656,12 @@ bot.command(['conductor', 'turno', 'chofer'], async (ctx) => {
     buttons.push([Markup.button.callback('🔙 Menú Principal', 'btn_main_menu')]);
 
     const msg = 
-      "🏍️ <b>Panel del Conductor / Mototaxista</b>\n\n" +
-      "Selecciona tu nombre para vincular tu cuenta y transmitir tu <b>ubicación en vivo</b> a la plataforma:";
+      "🏍️ <b>Vincular Cuenta de Conductor Existente</b>\n\n" +
+      "Selecciona tu nombre en la lista:";
 
     await safeReply(ctx, msg, Markup.inlineKeyboard(buttons));
   } catch (err: any) {
-    await safeReply(ctx, 'Error al consultar conductores.');
+    await safeReply(ctx, 'Error al consultar lista de conductores.');
   }
 });
 
@@ -478,21 +679,96 @@ bot.action(/^bind_courier_(.+)$/, async (ctx) => {
     const res = await dbClient.query("SELECT * FROM couriers WHERE id = $1", [courierId]);
     const courier = res.rows[0];
 
-    let msg = `🎉 <b>¡Conductor Vinculado!</b>\n\n`;
+    let msg = `🎉 <b>¡Conductor Vinculado Exitosamente!</b>\n\n`;
     msg += `👤 <b>Nombre:</b> ${courier.name}\n`;
     msg += `🛵 <b>Placa:</b> ${courier.plate || 'Vehículo'}\n`;
     msg += `⭐ <b>Calificación:</b> ${courier.rating || '5.0'} ⭐\n\n`;
-    msg += `📍 <b>Cómo activar tu ubicación en vivo:</b>\n`;
-    msg += `1. Toca el botón de adjuntar (📎) en este chat de Telegram.\n`;
-    msg += `2. Pulsa <b>Ubicación ➔ Compartir mi ubicación en tiempo real</b> (ej: 8 horas).\n\n`;
-    msg += `🚀 <i>La plataforma y los clientes podrán ver tu moto en el mapa en vivo.</i>`;
+    msg += `📍 <b>Para activar tu ubicación en el radar GPS:</b>\n`;
+    msg += `1. Toca el botón de adjuntar (📎) abajo.\n`;
+    msg += `2. Pulsa <b>Ubicación ➔ Compartir mi ubicación en tiempo real</b> (8 horas).\n\n`;
+    msg += `🚀 <i>Ya estás activo para recibir pedidos y carreras.</i>`;
 
     await safeReply(ctx, msg, Markup.inlineKeyboard([
+      [Markup.button.callback('🛵 Mi Panel de Conductor', 'btn_courier_panel')],
       [Markup.button.url('🗺️ Ver Radar en Vivo', 'http://89.117.72.233:3000')],
-      [Markup.button.callback('🛵 Menú Principal', 'btn_main_menu')]
+      [Markup.button.callback('🔙 Menú Principal', 'btn_main_menu')]
     ]));
   } catch (err: any) {
     await safeReply(ctx, 'Error al vincular conductor.');
+  }
+});
+
+// Activar/Desactivar Turno
+bot.action(/^courier_toggle_shift_(.+)_(on|off)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const courierId = ctx.match[1];
+  const turnOn = ctx.match[2] === 'on';
+  const userId = ctx.from.id.toString();
+
+  try {
+    await dbClient.query("UPDATE couriers SET is_active = $1, location_updated_at = now() WHERE id = $2", [turnOn, courierId]);
+    await showCourierPanel(ctx, userId);
+  } catch (e: any) {
+    await safeReply(ctx, 'Error al cambiar estado del turno.');
+  }
+});
+
+// Ver Ganancias del Día para el Conductor
+bot.action(/^courier_my_earnings_(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const courierId = ctx.match[1];
+  const today = new Date().toISOString().split('T')[0];
+
+  try {
+    const res = await courier_settle(courierId, today);
+    if (res.status === 'success') {
+      const s = res.settlement;
+      let msg = `💰 <b>Tu Liquidación de Hoy (${today})</b>\n\n`;
+      msg += `🛵 <b>Servicios realizados:</b> ${s.services}\n`;
+      msg += `💵 <b>Efectivo recibido en mano:</b> $${s.cash_collected.toLocaleString('es-CO')} COP\n`;
+      msg += `🎉 <b>Tus ganancias ganadas:</b> $${s.fees_earned.toLocaleString('es-CO')} COP\n`;
+      msg += `🏦 <b>Neto a consignar/entregar en caja:</b> $${s.net_to_consign.toLocaleString('es-CO')} COP\n\n`;
+      msg += `<i>Corte calculado automáticamente por la plataforma.</i>`;
+
+      await safeReply(ctx, msg, Markup.inlineKeyboard([
+        [Markup.button.callback('🛵 Volver a Mi Panel', 'btn_courier_panel')],
+        [Markup.button.callback('🔙 Menú Principal', 'btn_main_menu')]
+      ]));
+    } else {
+      await safeReply(ctx, 'No tienes servicios registrados hoy todavía.');
+    }
+  } catch (e: any) {
+    await safeReply(ctx, 'Error al calcular liquidación.');
+  }
+});
+
+// Marcar Pedido Entregado por el Conductor
+bot.action(/^courier_delivered_(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const code = ctx.match[1];
+  try {
+    const res = await dbClient.query(
+      "UPDATE orders SET status = 'DELIVERED', delivered_at = now() WHERE code = $1 RETURNING id, code, total, payment_method",
+      [code]
+    );
+    if (res.rowCount === 0) {
+      return safeReply(ctx, `No se encontró el pedido ${code}`);
+    }
+    const order = res.rows[0];
+    await ledger_post(order.id);
+
+    let reply = `🎉 <b>¡Excelente trabajo!</b>\n\n`;
+    reply += `El pedido <b>${code}</b> ha sido marcado como <b>ENTREGADO</b>.\n`;
+    reply += `💰 Total del servicio: <b>$${Number(order.total).toLocaleString('es-CO')} COP</b> (${order.payment_method === 'cash' ? 'Efectivo en mano' : 'Transferencia Bre-B'})\n\n`;
+    reply += `Tu ganancia y contabilidad han quedado registradas en el Libro Mayor. 🚀`;
+
+    await safeReply(ctx, reply, Markup.inlineKeyboard([
+      [Markup.button.callback('🛵 Mi Panel de Conductor', 'btn_courier_panel')],
+      [Markup.button.callback('🔙 Menú Principal', 'btn_main_menu')]
+    ]));
+  } catch (err: any) {
+    console.error("Error al marcar entregado por conductor:", err);
+    await safeReply(ctx, 'Error al completar el pedido.');
   }
 });
 
@@ -504,6 +780,7 @@ const sendWelcome = async (ctx: any) => {
   const session = getOrCreateSession(userId);
   session.history = [];
   session.pendingAction = null;
+  session.driverReg = null;
 
   const msg = 
     "¡Hola! 🛵 Bienvenido a <b>En un 2x3</b> — Domicilios y Transporte en Fonseca.\n\n" +
@@ -516,7 +793,10 @@ const sendWelcome = async (ctx: any) => {
       [Markup.button.callback('🛵 Pedir Mototaxi', 'btn_mototaxi')],
       [Markup.button.callback('📦 Domicilios (Comida, Tienda, Farmacia)', 'btn_domicilio')],
       [Markup.button.callback('🛣️ Viajes Intermunicipales', 'btn_intermunicipal')],
-      [Markup.button.callback('📋 Consultar Mi Servicio', 'btn_status_quick')]
+      [
+        Markup.button.callback('📋 Consultar Mi Servicio', 'btn_status_quick'),
+        Markup.button.callback('🏍️ Soy Conductor / Turno', 'btn_courier_panel')
+      ]
     ])
   );
 };
@@ -1232,6 +1512,108 @@ bot.on('text', async (ctx) => {
 
   console.log(`\n[TELEGRAM] Mensaje de ${userId} (${userName}): ${userMessage}`);
   const session = getOrCreateSession(userId);
+
+  // 0. Flujo Interactivo de Registro de Conductor (driverReg)
+  if (session.driverReg) {
+    const reg = session.driverReg;
+    if (reg.step === 'reg_name') {
+      reg.name = userMessage.trim();
+      reg.step = 'reg_phone';
+      const msg = 
+        `👤 <b>Nombre:</b> ${reg.name}\n\n` +
+        `📱 <b>Paso 2 de 5:</b> ¿Cuál es tu número de WhatsApp o Celular?\n\n` +
+        `<i>(Ejemplo: 3151234567)</i>`;
+      return safeReply(ctx, msg, Markup.inlineKeyboard([
+        [Markup.button.callback('❌ Cancelar Registro', 'cancel_driver_reg')]
+      ]));
+    }
+
+    if (reg.step === 'reg_phone') {
+      reg.phone = userMessage.trim().replace(/\s+/g, '');
+      reg.step = 'reg_vehicle_type';
+      const msg = 
+        `👤 <b>Nombre:</b> ${reg.name}\n` +
+        `📱 <b>WhatsApp:</b> ${reg.phone}\n\n` +
+        `🚗 <b>Paso 3 de 5:</b> ¿Qué tipo de vehículo vas a manejar?`;
+      return safeReply(ctx, msg, Markup.inlineKeyboard([
+        [Markup.button.callback('🏍️ Moto (Mototaxi y Domicilios)', 'reg_veh_moto')],
+        [Markup.button.callback('🚗 Carro (Viajes y Cupos Intermunicipales)', 'reg_veh_carro')],
+        [Markup.button.callback('❌ Cancelar', 'cancel_driver_reg')]
+      ]));
+    }
+
+    if (reg.step === 'reg_model_color') {
+      reg.model_color = userMessage.trim();
+      reg.step = 'reg_plate';
+      const isCar = reg.vehicle_type === 'carro';
+      const msg = 
+        `👤 <b>Nombre:</b> ${reg.name}\n` +
+        `📱 <b>WhatsApp:</b> ${reg.phone}\n` +
+        `${isCar ? '🚗' : '🏍️'} <b>Vehículo:</b> ${reg.model_color}\n\n` +
+        `🏷️ <b>Paso 5 de 5:</b> ¿Cuál es la <b>Placa</b> de tu vehículo?\n\n` +
+        `<i>(Ejemplo: ABC-123 o XYZ-45D)</i>`;
+      return safeReply(ctx, msg, Markup.inlineKeyboard([
+        [Markup.button.callback('❌ Cancelar Registro', 'cancel_driver_reg')]
+      ]));
+    }
+
+    if (reg.step === 'reg_plate') {
+      reg.plate = userMessage.trim().toUpperCase();
+      const vehicleType = reg.vehicle_type || 'moto';
+      const vehicleLabel = vehicleType === 'carro' ? 'Carro' : 'Moto';
+      const modelColor = reg.model_color || 'Boxer Negra';
+      const isCar = vehicleType === 'carro';
+      
+      try {
+        await dbClient.query(`
+          INSERT INTO couriers (name, wa_phone, vehicle, vehicle_type, vehicle_model, color, plate, rating, is_active, tg_user_id, current_lat, current_lng)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, 5.0, true, $8, 10.6075, -72.8530)
+          ON CONFLICT (wa_phone) DO UPDATE 
+          SET name = EXCLUDED.name,
+              vehicle = EXCLUDED.vehicle,
+              vehicle_type = EXCLUDED.vehicle_type,
+              vehicle_model = EXCLUDED.vehicle_model,
+              color = EXCLUDED.color,
+              plate = EXCLUDED.plate,
+              tg_user_id = EXCLUDED.tg_user_id,
+              is_active = true,
+              location_updated_at = now();
+        `, [
+          reg.name,
+          reg.phone,
+          vehicleLabel,
+          vehicleType,
+          modelColor,
+          modelColor,
+          reg.plate,
+          userId
+        ]);
+
+        session.driverReg = null;
+
+        let okMsg = `🎉 <b>¡Registro Exitoso como Conductor de En un 2x3!</b>\n\n`;
+        okMsg += `👤 <b>Nombre:</b> ${reg.name}\n`;
+        okMsg += `📱 <b>WhatsApp:</b> ${reg.phone}\n`;
+        okMsg += `${isCar ? '🚗' : '🏍️'} <b>Vehículo:</b> ${modelColor}\n`;
+        okMsg += `🏷️ <b>Placa:</b> <code>${reg.plate}</code>\n`;
+        okMsg += `📡 <b>Estado:</b> 🟢 <b>EN TURNO (ACTIVO)</b>\n\n`;
+        okMsg += `📍 <b>IMPORTANTE — Para activar tu radar GPS en vivo:</b>\n`;
+        okMsg += `1. Toca el botón de adjuntar (📎) abajo.\n`;
+        okMsg += `2. Selecciona <b>Ubicación ➔ Compartir mi ubicación en tiempo real</b> (elige 8 horas).\n\n`;
+        okMsg += `🚀 ¡Listo! Cada vez que un cliente pida una carrera o domicilio, te llegará la alerta aquí mismo con el botón para navegar en Google Maps y marcarlo como entregado.`;
+
+        return safeReply(ctx, okMsg, Markup.inlineKeyboard([
+          [Markup.button.callback('🛵 Mi Panel de Conductor', 'btn_courier_panel')],
+          [Markup.button.url('🗺️ Ver Radar en Vivo', 'http://89.117.72.233:3000')],
+          [Markup.button.callback('🔙 Menú Principal', 'btn_main_menu')]
+        ]));
+      } catch (err: any) {
+        console.error("Error al registrar conductor en BD:", err);
+        session.driverReg = null;
+        return safeReply(ctx, '⚠️ Hubo un error al guardar tu registro. Por favor escribe /conductor para intentar de nuevo.');
+      }
+    }
+  }
 
   // 1. Manejo de Flujo Interactivo Paso a Paso (PendingAction)
   if (session.pendingAction) {
