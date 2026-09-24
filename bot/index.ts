@@ -51,6 +51,23 @@ async function safeReply(ctx: any, text: string, extra?: any) {
   }
 }
 
+// Lista de Telegram IDs de administradores para alertas y autorizaciones de seguridad
+const ADMIN_IDS = (process.env.ADMIN_TELEGRAM_IDS || process.env.ADMIN_CHAT_ID || '1326456073,6183371987,688849556').split(',').map(s => s.trim()).filter(Boolean);
+
+async function notifyAdmins(text: string, extra?: any) {
+  const html = formatTelegramHTML(text);
+  for (const adminId of ADMIN_IDS) {
+    try {
+      await bot.telegram.sendMessage(adminId, html, { parse_mode: 'HTML', ...(extra || {}) });
+    } catch (e: any) {
+      // Si el bot no ha sido iniciado por el admin directamente, intentamos sin parse_mode o ignoramos
+      try {
+        await bot.telegram.sendMessage(adminId, text.replace(/[*_`]/g, ''), extra || {});
+      } catch (e2) {}
+    }
+  }
+}
+
 // PostgreSQL Client
 const dbClient = new Client({
   host: process.env.DB_HOST || 'postgres',
@@ -74,6 +91,10 @@ async function initDatabase() {
       ALTER TABLE couriers ADD COLUMN IF NOT EXISTS color VARCHAR(50) DEFAULT 'Blanco';
       ALTER TABLE couriers ADD COLUMN IF NOT EXISTS vehicle_model VARCHAR(100) DEFAULT 'Boxer CT 100';
       ALTER TABLE couriers ADD COLUMN IF NOT EXISTS vehicle_type VARCHAR(20) DEFAULT 'moto';
+      ALTER TABLE couriers ADD COLUMN IF NOT EXISTS is_verified boolean DEFAULT false;
+      ALTER TABLE couriers ADD COLUMN IF NOT EXISTS verification_status VARCHAR(30) DEFAULT 'pending';
+      ALTER TABLE couriers ADD COLUMN IF NOT EXISTS document_photos JSONB DEFAULT '[]'::jsonb;
+      ALTER TABLE couriers ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
     `);
 
     // Actualizar conductores existentes y crear choferes de automóvil para viajes y cupos
@@ -81,12 +102,15 @@ async function initDatabase() {
       UPDATE couriers SET vehicle_type = 'moto', color = 'Negro', vehicle_model = 'Boxer CT 100' 
       WHERE vehicle_type IS NULL;
 
-      INSERT INTO couriers (name, wa_phone, vehicle, plate, rating, is_active, color, vehicle_model, vehicle_type, current_lat, current_lng)
+      UPDATE couriers SET is_verified = true, verification_status = 'approved' 
+      WHERE is_verified IS NULL OR verification_status IS NULL;
+
+      INSERT INTO couriers (name, wa_phone, vehicle, plate, rating, is_active, is_verified, verification_status, color, vehicle_model, vehicle_type, current_lat, current_lng)
       VALUES 
-        ('Carlos Mendoza', '3157894561', 'Carro', 'UYP-452', 4.9, true, 'Gris Plata', 'Chevrolet Sail', 'carro', 10.6090, -72.8510),
-        ('Javier Solano', '3106543210', 'Carro', 'WXY-891', 5.0, true, 'Blanco', 'Renault Duster', 'carro', 10.6060, -72.8550)
+        ('Carlos Mendoza', '3157894561', 'Carro', 'UYP-452', 4.9, true, true, 'approved', 'Gris Plata', 'Chevrolet Sail', 'carro', 10.6090, -72.8510),
+        ('Javier Solano', '3106543210', 'Carro', 'WXY-891', 5.0, true, true, 'approved', 'Blanco', 'Renault Duster', 'carro', 10.6060, -72.8550)
       ON CONFLICT (wa_phone) DO UPDATE 
-      SET color = EXCLUDED.color, vehicle_model = EXCLUDED.vehicle_model, vehicle_type = EXCLUDED.vehicle_type, plate = EXCLUDED.plate, name = EXCLUDED.name;
+      SET color = EXCLUDED.color, vehicle_model = EXCLUDED.vehicle_model, vehicle_type = EXCLUDED.vehicle_type, plate = EXCLUDED.plate, name = EXCLUDED.name, is_verified = true, verification_status = 'approved';
     `);
 
     // Asignar coordenadas iniciales dispersas en Fonseca si están en el punto central
@@ -97,7 +121,7 @@ async function initDatabase() {
       WHERE current_lat = 10.6075;
     `);
 
-    console.log('✅ Base de datos lista con soporte de Radar GPS, Motos y Carros intermunicipales');
+    console.log('✅ Base de datos lista con soporte de Verificación de Seguridad, Radar GPS, Motos y Carros');
   } catch (e) {
     console.error("Error inicializando DB:", e);
   }
@@ -513,6 +537,35 @@ async function showCourierPanel(ctx: any, userId: string) {
       await dbClient.query("UPDATE couriers SET tg_user_id = $1 WHERE id = $2", [userId, courier.id]);
     }
 
+    // 🛡️ Filtro de Seguridad: Verificar si la cuenta ha sido autorizada por el Administrador
+    if (!courier.is_verified || courier.verification_status === 'pending') {
+      let pendingMsg = `⏳ <b>Perfil en Revisión de Seguridad</b>\n\n`;
+      pendingMsg += `👤 <b>Conductor:</b> ${courier.name}\n`;
+      pendingMsg += `📱 <b>WhatsApp:</b> <code>${courier.wa_phone}</code>\n`;
+      pendingMsg += `🛵 <b>Vehículo:</b> ${courier.vehicle_model || courier.vehicle} (<code>${courier.plate || '-'}</code>)\n`;
+      pendingMsg += `🛡️ <b>Estado:</b> ⏳ <b>PENDIENTE DE APROBACIÓN</b>\n\n`;
+      pendingMsg += `<i>Por seguridad de los pasajeros y comercios en Fonseca, nuestro equipo administrativo valida cada perfil antes de habilitar la recepción de servicios.</i>\n\n`;
+      pendingMsg += `🔔 Te enviaremos una notificación por este mismo chat en cuanto tu cuenta sea autorizada.`;
+
+      return safeReply(ctx, pendingMsg, Markup.inlineKeyboard([
+        [Markup.button.callback('🔄 Comprobar Estado de Aprobación', 'btn_courier_panel')],
+        [Markup.button.callback('🔙 Menú Principal', 'btn_main_menu')]
+      ]));
+    }
+
+    if (courier.verification_status === 'rejected') {
+      let rejMsg = `❌ <b>Solicitud de Conductor No Aprobada</b>\n\n`;
+      rejMsg += `Hola <b>${courier.name}</b>, tu solicitud de registro como conductor no fue aprobada por el equipo de control de seguridad.\n\n`;
+      if (courier.rejection_reason) {
+        rejMsg += `<b>Motivo:</b> ${courier.rejection_reason}\n\n`;
+      }
+      rejMsg += `Si deseas suministrar documentos adicionales o apelar, comunícate con la central de soporte.`;
+
+      return safeReply(ctx, rejMsg, Markup.inlineKeyboard([
+        [Markup.button.callback('🔙 Menú Principal', 'btn_main_menu')]
+      ]));
+    }
+
     // Consultar si tiene un pedido activo en curso
     const activeOrderRes = await dbClient.query(`
       SELECT code, type, status, total, payment_method, origin, destination, created_at
@@ -524,7 +577,7 @@ async function showCourierPanel(ctx: any, userId: string) {
     const isCar = courier.vehicle_type === 'carro';
 
     let msg = `🛵 <b>Panel del Conductor — En un 2x3</b>\n\n`;
-    msg += `👤 <b>Conductor:</b> ${courier.name}\n`;
+    msg += `👤 <b>Conductor:</b> ${courier.name} ✅ <i>(Verificado)</i>\n`;
     msg += `📱 <b>WhatsApp:</b> <code>${courier.wa_phone}</code>\n`;
     msg += `${isCar ? '🚗' : '🏍️'} <b>Vehículo:</b> ${courier.vehicle_model || courier.vehicle} (${courier.color || 'Blanco'})\n`;
     msg += `🏷️ <b>Placa:</b> <code>${courier.plate || '-'}</code>\n`;
@@ -645,11 +698,204 @@ bot.action('reg_veh_carro', async (ctx) => {
   }
 });
 
+// Omitir envío de foto de documento por ahora
+bot.action('skip_driver_docs', async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id.toString();
+  const session = getOrCreateSession(userId);
+  if (!session.driverReg) return safeReply(ctx, 'No hay registro pendiente.');
+  
+  const reg = session.driverReg;
+  const vehicleType = reg.vehicle_type || 'moto';
+  const vehicleLabel = vehicleType === 'carro' ? 'Carro' : 'Moto';
+  const modelColor = reg.model_color || 'Boxer Negra';
+
+  try {
+    const dbRes = await dbClient.query(`
+      INSERT INTO couriers (name, wa_phone, vehicle, vehicle_type, vehicle_model, color, plate, rating, is_active, is_verified, verification_status, tg_user_id, current_lat, current_lng)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, 5.0, false, false, 'pending', $8, 10.6075, -72.8530)
+      ON CONFLICT (wa_phone) DO UPDATE 
+      SET name = EXCLUDED.name,
+          vehicle = EXCLUDED.vehicle,
+          vehicle_type = EXCLUDED.vehicle_type,
+          vehicle_model = EXCLUDED.vehicle_model,
+          color = EXCLUDED.color,
+          plate = EXCLUDED.plate,
+          tg_user_id = EXCLUDED.tg_user_id,
+          is_active = false,
+          is_verified = false,
+          verification_status = 'pending',
+          location_updated_at = now()
+      RETURNING id;
+    `, [
+      reg.name,
+      reg.phone,
+      vehicleLabel,
+      vehicleType,
+      modelColor,
+      modelColor,
+      reg.plate || 'SIN PLACA',
+      userId
+    ]);
+
+    const courierId = dbRes.rows[0].id;
+    session.driverReg = null;
+
+    let okMsg = `⏳ <b>¡Solicitud de Registro Enviada con Éxito!</b>\n\n`;
+    okMsg += `👤 <b>Nombre:</b> ${reg.name}\n`;
+    okMsg += `📱 <b>WhatsApp:</b> ${reg.phone}\n`;
+    okMsg += `🛵 <b>Vehículo:</b> ${modelColor} (<code>${reg.plate || '-'}</code>)\n\n`;
+    okMsg += `🛡️ <b>Control de Seguridad:</b> Tu perfil ha sido remitido al equipo administrativo de En un 2x3. Revisaremos tus datos antes de activar tu cuenta para garantizar un servicio seguro en Fonseca.\n\n`;
+    okMsg += `🔔 Te avisaremos por este chat en cuanto seas aprobado.`;
+
+    await safeReply(ctx, okMsg, Markup.inlineKeyboard([
+      [Markup.button.callback('🔄 Comprobar Estado', 'btn_courier_panel')],
+      [Markup.button.callback('🔙 Menú Principal', 'btn_main_menu')]
+    ]));
+
+    // Notificar a los Administradores de la Central
+    await notifyAdmins(
+      `🚨 <b>NUEVA SOLICITUD DE CONDUCTOR PENDIENTE DE APROBACIÓN</b>\n\n` +
+      `👤 <b>Nombre:</b> ${reg.name}\n` +
+      `📱 <b>WhatsApp:</b> <code>${reg.phone}</code>\n` +
+      `🛵 <b>Vehículo:</b> ${modelColor} | Placa: <code>${reg.plate}</code>\n` +
+      `🆔 <b>Telegram ID:</b> <code>${userId}</code>\n` +
+      `📄 <b>Documentos:</b> Pendientes de entrega\n\n` +
+      `👉 <i>¿Deseas autorizar a este conductor?</i>`,
+      Markup.inlineKeyboard([
+        [Markup.button.callback(`✅ Aprobar a ${reg.name.split(' ')[0]}`, `admin_approve_driver_${courierId}`)],
+        [Markup.button.callback(`❌ Rechazar`, `admin_reject_driver_${courierId}`)]
+      ])
+    );
+  } catch (err: any) {
+    console.error("Error registrando conductor sin foto:", err);
+    session.driverReg = null;
+    await safeReply(ctx, 'Error al guardar solicitud. Escribe /conductor para intentar nuevamente.');
+  }
+});
+
+// Admin: Aprobar Conductor
+bot.action(/^admin_approve_driver_(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const courierId = ctx.match[1];
+  try {
+    const res = await dbClient.query(`
+      UPDATE couriers 
+      SET is_verified = true, verification_status = 'approved', is_active = true, location_updated_at = now() 
+      WHERE id = $1 RETURNING *
+    `, [courierId]);
+
+    if (res.rows.length === 0) {
+      return safeReply(ctx, '⚠️ Conductor no encontrado.');
+    }
+
+    const courier = res.rows[0];
+    await safeReply(ctx, `✅ <b>¡Conductor APROBADO!</b>\n\n👤 <b>${courier.name}</b> (${courier.plate || 'Vehículo'}) ahora está verificado y activo en la plataforma.`);
+
+    // Notificar al conductor por Telegram
+    if (courier.tg_user_id) {
+      try {
+        const welcomeMsg = 
+          `🎉 <b>¡Tu cuenta de Conductor ha sido APROBADA!</b> 🚀\n\n` +
+          `Hola <b>${courier.name}</b>, el equipo de administración de En un 2x3 ha validado tus datos.\n\n` +
+          `Ya puedes iniciar turno 🟢 y recibir servicios en Fonseca.\n\n` +
+          `📍 <b>Recuerda:</b> Toca 📎 ➔ Ubicación en tiempo real para activar tu radar GPS.`;
+
+        await bot.telegram.sendMessage(courier.tg_user_id, welcomeMsg, {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('🛵 Abrir Mi Panel de Conductor', 'btn_courier_panel')],
+            [Markup.button.url('🗺️ Ver Radar en Vivo', 'http://89.117.72.233:3000')],
+            [Markup.button.callback('🔙 Menú Principal', 'btn_main_menu')]
+          ])
+        });
+      } catch (tgErr: any) {
+        console.error("No se pudo notificar al conductor por TG:", tgErr.message);
+      }
+    }
+  } catch (err: any) {
+    console.error("Error aprobando conductor:", err);
+    await safeReply(ctx, 'Error al aprobar conductor.');
+  }
+});
+
+// Admin: Rechazar Conductor
+bot.action(/^admin_reject_driver_(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const courierId = ctx.match[1];
+  try {
+    const res = await dbClient.query(`
+      UPDATE couriers 
+      SET is_verified = false, verification_status = 'rejected', is_active = false 
+      WHERE id = $1 RETURNING *
+    `, [courierId]);
+
+    if (res.rows.length === 0) {
+      return safeReply(ctx, '⚠️ Conductor no encontrado.');
+    }
+
+    const courier = res.rows[0];
+    await safeReply(ctx, `❌ <b>Conductor RECHAZADO</b>\n\n👤 <b>${courier.name}</b> (${courier.plate || '-'}) ha sido marcado como rechazado.`);
+
+    if (courier.tg_user_id) {
+      try {
+        const rejMsg = 
+          `⚠️ <b>Estado de tu Solicitud de Conductor</b>\n\n` +
+          `Hola ${courier.name}, tu registro como conductor no fue aprobado en este momento por el equipo de seguridad.\n\n` +
+          `Si consideras que fue un error o deseas enviar tus documentos, comunícate con la central de soporte.`;
+
+        await bot.telegram.sendMessage(courier.tg_user_id, rejMsg, {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('🛵 Menú Principal', 'btn_main_menu')]
+          ])
+        });
+      } catch (tgErr: any) {
+        console.error("No se pudo notificar rechazo:", tgErr.message);
+      }
+    }
+  } catch (err: any) {
+    console.error("Error rechazando conductor:", err);
+    await safeReply(ctx, 'Error al procesar rechazo.');
+  }
+});
+
+// Comandos de Administrador para Verificación
+bot.command(['pendientes', 'conductores_pendientes', 'verificar_conductores'], async (ctx) => {
+  try {
+    const res = await dbClient.query(`
+      SELECT * FROM couriers 
+      WHERE is_verified = false OR verification_status = 'pending'
+      ORDER BY id DESC LIMIT 15
+    `);
+
+    if (res.rows.length === 0) {
+      return safeReply(ctx, '✅ <b>No hay conductores pendientes de verificación.</b> Todos los perfiles están al día.');
+    }
+
+    let msg = `🛡️ <b>Conductores Pendientes de Aprobación (${res.rows.length}):</b>\n\n`;
+    for (const c of res.rows) {
+      msg += `👤 <b>${c.name}</b> | 📱 <code>${c.wa_phone}</code>\n`;
+      msg += `🛵 ${c.vehicle_model || c.vehicle} | Placa: <code>${c.plate || '-'}</code>\n`;
+      msg += `🆔 TG: <code>${c.tg_user_id || 'Sin vincular'}</code>\n\n`;
+    }
+    
+    const buttons = res.rows.map(c => [
+      Markup.button.callback(`✅ Aprobar ${c.name}`, `admin_approve_driver_${c.id}`),
+      Markup.button.callback(`❌ Rechazar`, `admin_reject_driver_${c.id}`)
+    ]);
+
+    await safeReply(ctx, msg, Markup.inlineKeyboard(buttons));
+  } catch (e: any) {
+    await safeReply(ctx, 'Error al consultar conductores pendientes.');
+  }
+});
+
 // Listar conductores existentes para vincular
 bot.action('list_existing_drivers', async (ctx) => {
   await ctx.answerCbQuery();
   try {
-    const couriersRes = await dbClient.query("SELECT * FROM couriers ORDER BY name ASC");
+    const couriersRes = await dbClient.query("SELECT * FROM couriers WHERE is_verified = true ORDER BY name ASC");
     const buttons = couriersRes.rows.map(c => [
       Markup.button.callback(`🏍️ Soy ${c.name} (${c.plate || 'Moto'})`, `bind_courier_${c.id}`)
     ]);
@@ -657,7 +903,7 @@ bot.action('list_existing_drivers', async (ctx) => {
 
     const msg = 
       "🏍️ <b>Vincular Cuenta de Conductor Existente</b>\n\n" +
-      "Selecciona tu nombre en la lista:";
+      "Selecciona tu nombre en la lista de autorizados:";
 
     await safeReply(ctx, msg, Markup.inlineKeyboard(buttons));
   } catch (err: any) {
@@ -698,7 +944,7 @@ bot.action(/^bind_courier_(.+)$/, async (ctx) => {
   }
 });
 
-// Activar/Desactivar Turno
+// Activar/Desactivar Turno (Con validación de verificación)
 bot.action(/^courier_toggle_shift_(.+)_(on|off)$/, async (ctx) => {
   await ctx.answerCbQuery();
   const courierId = ctx.match[1];
@@ -706,6 +952,11 @@ bot.action(/^courier_toggle_shift_(.+)_(on|off)$/, async (ctx) => {
   const userId = ctx.from.id.toString();
 
   try {
+    const courierCheck = await dbClient.query("SELECT * FROM couriers WHERE id = $1", [courierId]);
+    if (courierCheck.rows.length > 0 && !courierCheck.rows[0].is_verified && turnOn) {
+      return safeReply(ctx, '⏳ Tu cuenta aún está pendiente de aprobación por la administración de En un 2x3.');
+    }
+
     await dbClient.query("UPDATE couriers SET is_active = $1, location_updated_at = now() WHERE id = $2", [turnOn, courierId]);
     await showCourierPanel(ctx, userId);
   } catch (e: any) {
@@ -1288,6 +1539,92 @@ bot.on('photo', async (ctx) => {
   const userId = ctx.from.id.toString();
   await ctx.sendChatAction('typing').catch(e => console.error(e));
 
+  const session = getOrCreateSession(userId);
+
+  // 1. Si el conductor está enviando su documento de seguridad (Cédula/Licencia)
+  if (session.driverReg && (session.driverReg.step === 'reg_docs' || session.driverReg.step === 'reg_plate')) {
+    const reg = session.driverReg;
+    const photos = ctx.message.photo;
+    const bestPhoto = photos[photos.length - 1];
+    let photoUrl = '';
+    try {
+      const fileLink = await ctx.telegram.getFileLink(bestPhoto.file_id);
+      photoUrl = fileLink.href;
+    } catch (e) {}
+
+    const vehicleType = reg.vehicle_type || 'moto';
+    const vehicleLabel = vehicleType === 'carro' ? 'Carro' : 'Moto';
+    const modelColor = reg.model_color || 'Boxer Negra';
+
+    try {
+      const dbRes = await dbClient.query(`
+        INSERT INTO couriers (name, wa_phone, vehicle, vehicle_type, vehicle_model, color, plate, rating, is_active, is_verified, verification_status, document_photos, tg_user_id, current_lat, current_lng)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 5.0, false, false, 'pending', $8, $9, 10.6075, -72.8530)
+        ON CONFLICT (wa_phone) DO UPDATE 
+        SET name = EXCLUDED.name,
+            vehicle = EXCLUDED.vehicle,
+            vehicle_type = EXCLUDED.vehicle_type,
+            vehicle_model = EXCLUDED.vehicle_model,
+            color = EXCLUDED.color,
+            plate = EXCLUDED.plate,
+            document_photos = EXCLUDED.document_photos,
+            tg_user_id = EXCLUDED.tg_user_id,
+            is_active = false,
+            is_verified = false,
+            verification_status = 'pending',
+            location_updated_at = now()
+        RETURNING id;
+      `, [
+        reg.name,
+        reg.phone,
+        vehicleLabel,
+        vehicleType,
+        modelColor,
+        modelColor,
+        reg.plate || 'SIN PLACA',
+        JSON.stringify([photoUrl].filter(Boolean)),
+        userId
+      ]);
+
+      const courierId = dbRes.rows[0].id;
+      session.driverReg = null;
+
+      let okMsg = `⏳ <b>¡Foto de Documento y Registro Recibidos!</b>\n\n`;
+      okMsg += `👤 <b>Nombre:</b> ${reg.name}\n`;
+      okMsg += `📱 <b>WhatsApp:</b> ${reg.phone}\n`;
+      okMsg += `🛵 <b>Vehículo:</b> ${modelColor} (<code>${reg.plate || '-'}</code>)\n`;
+      okMsg += `📄 <b>Documento:</b> Recibido correctamente para validación\n\n`;
+      okMsg += `🛡️ <b>Control de Seguridad:</b> Tu perfil ha sido remitido a la central administrativa de En un 2x3. Verificaremos tu identidad y te avisaremos por este chat en cuanto seas aprobado.\n\n`;
+      okMsg += `<i>¡Gracias por tu compromiso con la seguridad!</i>`;
+
+      await safeReply(ctx, okMsg, Markup.inlineKeyboard([
+        [Markup.button.callback('🔄 Comprobar Estado', 'btn_courier_panel')],
+        [Markup.button.callback('🔙 Menú Principal', 'btn_main_menu')]
+      ]));
+
+      // Notificar a los Administradores
+      await notifyAdmins(
+        `🚨 <b>NUEVA SOLICITUD DE CONDUCTOR PARA VERIFICACIÓN</b>\n\n` +
+        `👤 <b>Nombre:</b> ${reg.name}\n` +
+        `📱 <b>WhatsApp:</b> <code>${reg.phone}</code>\n` +
+        `🛵 <b>Vehículo:</b> ${modelColor} | Placa: <code>${reg.plate}</code>\n` +
+        `🆔 <b>Telegram ID:</b> <code>${userId}</code>\n` +
+        `📸 <b>Foto de Soporte:</b> ${photoUrl ? `<a href="${photoUrl}">Ver Documento Adjunto</a>` : 'Adjunta'}\n\n` +
+        `👉 <i>¿Deseas autorizar a este conductor?</i>`,
+        Markup.inlineKeyboard([
+          [Markup.button.callback(`✅ Aprobar a ${reg.name.split(' ')[0]}`, `admin_approve_driver_${courierId}`)],
+          [Markup.button.callback(`❌ Rechazar`, `admin_reject_driver_${courierId}`)]
+        ])
+      );
+
+      return;
+    } catch (err: any) {
+      console.error("Error al registrar con foto:", err);
+      session.driverReg = null;
+      return safeReply(ctx, '⚠️ Error procesando registro con documento. Escribe /conductor para intentar de nuevo.');
+    }
+  }
+
   try {
     const orderRes = await dbClient.query(`
       SELECT o.id, o.code, o.total, o.payment_method, o.status, o.payment_status
@@ -1298,7 +1635,7 @@ bot.on('photo', async (ctx) => {
     `, [userId]);
 
     if (orderRes.rows.length === 0) {
-      return safeReply(ctx, '📸 Recibí tu foto, pero no tienes ningún servicio pendiente de pago.');
+      return safeReply(ctx, '📸 Recibí tu foto, pero no tienes ningún servicio pendiente de pago ni registro activo.');
     }
 
     const order = orderRes.rows[0];
@@ -1559,59 +1896,32 @@ bot.on('text', async (ctx) => {
 
     if (reg.step === 'reg_plate') {
       reg.plate = userMessage.trim().toUpperCase();
-      const vehicleType = reg.vehicle_type || 'moto';
-      const vehicleLabel = vehicleType === 'carro' ? 'Carro' : 'Moto';
-      const modelColor = reg.model_color || 'Boxer Negra';
-      const isCar = vehicleType === 'carro';
-      
-      try {
-        await dbClient.query(`
-          INSERT INTO couriers (name, wa_phone, vehicle, vehicle_type, vehicle_model, color, plate, rating, is_active, tg_user_id, current_lat, current_lng)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, 5.0, true, $8, 10.6075, -72.8530)
-          ON CONFLICT (wa_phone) DO UPDATE 
-          SET name = EXCLUDED.name,
-              vehicle = EXCLUDED.vehicle,
-              vehicle_type = EXCLUDED.vehicle_type,
-              vehicle_model = EXCLUDED.vehicle_model,
-              color = EXCLUDED.color,
-              plate = EXCLUDED.plate,
-              tg_user_id = EXCLUDED.tg_user_id,
-              is_active = true,
-              location_updated_at = now();
-        `, [
-          reg.name,
-          reg.phone,
-          vehicleLabel,
-          vehicleType,
-          modelColor,
-          modelColor,
-          reg.plate,
-          userId
-        ]);
+      reg.step = 'reg_docs';
+      const isCar = reg.vehicle_type === 'carro';
+      const msg = 
+        `👤 <b>Nombre:</b> ${reg.name}\n` +
+        `📱 <b>WhatsApp:</b> ${reg.phone}\n` +
+        `${isCar ? '🚗' : '🏍️'} <b>Vehículo:</b> ${reg.model_color}\n` +
+        `🏷️ <b>Placa:</b> <code>${reg.plate}</code>\n\n` +
+        `📸 <b>Paso 5 de 5 — Control de Seguridad y Documentos:</b>\n\n` +
+        `Por favor envía una foto clara de tu <b>Cédula de Ciudadanía</b> o <b>Licencia de Conducción</b> por este chat para que el equipo administrativo valide tu identidad y apruebe tu cuenta.\n\n` +
+        `<i>(Toma una foto y envíala por aquí, o pulsa "Enviar Más Tarde" si no la tienes a mano)</i>`;
 
-        session.driverReg = null;
+      return safeReply(ctx, msg, Markup.inlineKeyboard([
+        [Markup.button.callback('⏩ Enviar Documento Más Tarde', 'skip_driver_docs')],
+        [Markup.button.callback('❌ Cancelar Registro', 'cancel_driver_reg')]
+      ]));
+    }
 
-        let okMsg = `🎉 <b>¡Registro Exitoso como Conductor de En un 2x3!</b>\n\n`;
-        okMsg += `👤 <b>Nombre:</b> ${reg.name}\n`;
-        okMsg += `📱 <b>WhatsApp:</b> ${reg.phone}\n`;
-        okMsg += `${isCar ? '🚗' : '🏍️'} <b>Vehículo:</b> ${modelColor}\n`;
-        okMsg += `🏷️ <b>Placa:</b> <code>${reg.plate}</code>\n`;
-        okMsg += `📡 <b>Estado:</b> 🟢 <b>EN TURNO (ACTIVO)</b>\n\n`;
-        okMsg += `📍 <b>IMPORTANTE — Para activar tu radar GPS en vivo:</b>\n`;
-        okMsg += `1. Toca el botón de adjuntar (📎) abajo.\n`;
-        okMsg += `2. Selecciona <b>Ubicación ➔ Compartir mi ubicación en tiempo real</b> (elige 8 horas).\n\n`;
-        okMsg += `🚀 ¡Listo! Cada vez que un cliente pida una carrera o domicilio, te llegará la alerta aquí mismo con el botón para navegar en Google Maps y marcarlo como entregado.`;
+    if (reg.step === 'reg_docs') {
+      const msg = 
+        `📸 <b>Paso de Verificación de Documento:</b>\n\n` +
+        `Por favor envía una foto de tu <b>Cédula</b> o <b>Licencia</b> usando la cámara o galería de Telegram, o pulsa el botón de abajo para enviar la solicitud sin foto por ahora:`;
 
-        return safeReply(ctx, okMsg, Markup.inlineKeyboard([
-          [Markup.button.callback('🛵 Mi Panel de Conductor', 'btn_courier_panel')],
-          [Markup.button.url('🗺️ Ver Radar en Vivo', 'http://89.117.72.233:3000')],
-          [Markup.button.callback('🔙 Menú Principal', 'btn_main_menu')]
-        ]));
-      } catch (err: any) {
-        console.error("Error al registrar conductor en BD:", err);
-        session.driverReg = null;
-        return safeReply(ctx, '⚠️ Hubo un error al guardar tu registro. Por favor escribe /conductor para intentar de nuevo.');
-      }
+      return safeReply(ctx, msg, Markup.inlineKeyboard([
+        [Markup.button.callback('⏩ Enviar Documento Más Tarde', 'skip_driver_docs')],
+        [Markup.button.callback('❌ Cancelar Registro', 'cancel_driver_reg')]
+      ]));
     }
   }
 
@@ -2081,6 +2391,75 @@ const adminServer = http.createServer(async (req, res) => {
     }
   }
 
+  if (url === '/api/couriers') {
+    try {
+      const couriers = await dbClient.query(`
+        SELECT id, name, wa_phone, vehicle, vehicle_type, vehicle_model, color, plate, rating, is_active, is_verified, verification_status, current_lat, current_lng, location_updated_at
+        FROM couriers
+        ORDER BY id DESC
+      `);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify(couriers.rows));
+    } catch (e: any) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: e.message }));
+    }
+  }
+
+  if (url === '/api/merchants') {
+    try {
+      const merchants = await dbClient.query(`SELECT * FROM merchants ORDER BY id ASC`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify(merchants.rows));
+    } catch (e: any) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: e.message }));
+    }
+  }
+
+  if (url.startsWith('/api/couriers/approve/')) {
+    const courierId = url.replace('/api/couriers/approve/', '').trim();
+    try {
+      const resDb = await dbClient.query(`
+        UPDATE couriers 
+        SET is_verified = true, verification_status = 'approved', is_active = true, location_updated_at = now() 
+        WHERE id = $1 RETURNING *
+      `, [courierId]);
+
+      if (resDb.rows.length > 0 && resDb.rows[0].tg_user_id) {
+        try {
+          await bot.telegram.sendMessage(resDb.rows[0].tg_user_id, 
+            `🎉 <b>¡Tu cuenta de Conductor ha sido APROBADA!</b> 🚀\n\nYa puedes iniciar turno 🟢 y recibir servicios en Fonseca.`, 
+            { parse_mode: 'HTML' }
+          );
+        } catch (tgErr) {}
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: true, courier: resDb.rows[0] }));
+    } catch (e: any) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: e.message }));
+    }
+  }
+
+  if (url.startsWith('/api/couriers/reject/')) {
+    const courierId = url.replace('/api/couriers/reject/', '').trim();
+    try {
+      const resDb = await dbClient.query(`
+        UPDATE couriers 
+        SET is_verified = false, verification_status = 'rejected', is_active = false 
+        WHERE id = $1 RETURNING *
+      `, [courierId]);
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: true, courier: resDb.rows[0] }));
+    } catch (e: any) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: e.message }));
+    }
+  }
+
   // HTML SPA Dashboard (Mobile & Desktop Responsive - Plataforma Única Consolidada)
   const html = `<!DOCTYPE html>
 <html lang="es">
@@ -2260,25 +2639,27 @@ const adminServer = http.createServer(async (req, res) => {
       </div>
     </div>
 
-    <!-- Tab: Flota Mototaxis -->
+    <!-- Tab: Flota Mototaxis & Conductores -->
     <div id="tab-couriers" class="tab-content hidden bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow">
-      <div class="p-3.5 md:p-4 border-b border-slate-800">
-        <h2 class="font-bold text-xs md:text-sm text-slate-200">Flota de Conductores</h2>
+      <div class="p-3.5 md:p-4 border-b border-slate-800 flex items-center justify-between">
+        <h2 class="font-bold text-xs md:text-sm text-slate-200">Flota de Conductores & Seguridad</h2>
+        <span class="text-[10px] text-slate-400">Validación de Identidad y Turnos</span>
       </div>
       <div class="overflow-x-auto">
-        <table class="w-full text-left text-xs min-w-[550px]">
+        <table class="w-full text-left text-xs min-w-[650px]">
           <thead class="bg-slate-950 text-slate-400 uppercase font-mono text-[10px] border-b border-slate-800">
             <tr>
               <th class="p-3">Nombre</th>
               <th class="p-3">Teléfono</th>
-              <th class="p-3">Placa</th>
+              <th class="p-3">Vehículo / Placa</th>
               <th class="p-3">Rating</th>
-              <th class="p-3">Última Ubicación</th>
-              <th class="p-3">Estado</th>
+              <th class="p-3">Seguridad</th>
+              <th class="p-3">Turno</th>
+              <th class="p-3 text-right">Acción</th>
             </tr>
           </thead>
           <tbody id="table-couriers-body" class="divide-y divide-slate-800">
-            <tr><td colspan="6" class="p-4 text-center text-slate-500">Cargando conductores...</td></tr>
+            <tr><td colspan="7" class="p-4 text-center text-slate-500">Cargando conductores...</td></tr>
           </tbody>
         </table>
       </div>
@@ -2555,18 +2936,55 @@ const adminServer = http.createServer(async (req, res) => {
 
         const couriers = await fetch('/api/couriers').then(r => r.json());
         const courTbody = document.getElementById('table-couriers-body');
-        courTbody.innerHTML = couriers.map(c => \`
+        courTbody.innerHTML = couriers.length ? couriers.map(c => \`
           <tr class="hover:bg-slate-800/50">
-            <td class="p-3 font-bold">\${c.name}</td>
+            <td class="p-3 font-bold text-slate-200">\${c.name}</td>
             <td class="p-3 font-mono text-slate-400">\${c.wa_phone}</td>
-            <td class="p-3 font-mono text-amber-400">\${c.plate || '-'}</td>
+            <td class="p-3 font-mono text-amber-400">\${c.vehicle_model || c.vehicle || 'Moto'} (\${c.plate || '-'})</td>
             <td class="p-3 text-yellow-400"><i class="fa-solid fa-star text-xs"></i> \${c.rating || '5.0'}</td>
-            <td class="p-3 font-mono text-slate-400 text-[11px]">\${c.current_lat ? parseFloat(c.current_lat).toFixed(4) + ', ' + parseFloat(c.current_lng).toFixed(4) : '-'}</td>
-            <td class="p-3">\${c.is_active ? '<span class="text-emerald-400 font-bold">Activo</span>' : '<span class="text-rose-400">Inactivo</span>'}</td>
+            <td class="p-3">
+              \${c.is_verified ? '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">✅ Verificado</span>' : (c.verification_status === 'rejected' ? '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-400 border border-rose-500/30">❌ Rechazado</span>' : '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse">⏳ Pendiente</span>')}
+            </td>
+            <td class="p-3">\${c.is_active ? '<span class="text-emerald-400 font-bold">🟢 En Turno</span>' : '<span class="text-slate-500">🔴 Inactivo</span>'}</td>
+            <td class="p-3 text-right">
+              \${!c.is_verified ? \`
+                <button onclick="approveCourier(\${c.id})" class="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs font-bold mr-1 transition shadow">Aprobar</button>
+                <button onclick="rejectCourier(\${c.id})" class="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded text-xs font-bold transition shadow">Rechazar</button>
+              \` : \`
+                <span class="text-xs text-slate-500">Autorizado</span>
+              \`}
+            </td>
           </tr>
-        \`).join('');
+        \`).join('') : '<tr><td colspan="7" class="p-4 text-center text-slate-500">No hay conductores registrados.</td></tr>';
       } catch (e) {
         console.error("Error cargando datos:", e);
+      }
+    }
+
+    async function approveCourier(id) {
+      if (!confirm('¿Deseas autorizar y habilitar este conductor en En un 2x3?')) return;
+      try {
+        const res = await fetch('/api/couriers/approve/' + id, { method: 'POST' });
+        if (res.ok) {
+          alert('✅ Conductor verificado y aprobado.');
+          loadAllData();
+          loadRadarMap();
+        }
+      } catch (e) {
+        alert('Error al aprobar conductor.');
+      }
+    }
+
+    async function rejectCourier(id) {
+      if (!confirm('¿Deseas rechazar la solicitud de este conductor?')) return;
+      try {
+        const res = await fetch('/api/couriers/reject/' + id, { method: 'POST' });
+        if (res.ok) {
+          alert('❌ Solicitud rechazada.');
+          loadAllData();
+        }
+      } catch (e) {
+        alert('Error al rechazar conductor.');
       }
     }
 
