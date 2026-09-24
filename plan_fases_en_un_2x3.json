@@ -1,194 +1,210 @@
-﻿{
-  proyecto: {
-    nombre: En un 2x3,
-    descripcion: Plataforma autonoma y chatbot de mensajeria, domicilios, mandados, transporte de personas y comercio local con IA,
-    ubicacion: Fonseca, La Guajira, Colombia,
-    nombre_bot: Fonsi,
-    slogan: Que deseas? Te lo llevo en un 2x3,
-    moneda_principal: COP,
-    soporte_multimoneda: [USD, COP],
-    version: 1.0.0,
-    fecha_actualizacion: 2026-09-23,
-    vps_ip: 89.117.72.233,
-    dashboard_url: http://89.117.72.233:8507,
-    bot_telegram: @Fonsi2x3_bot
+{
+  "proyecto": {
+    "nombre": "En un 2x3",
+    "descripcion": "Plataforma integral, autónoma y chatbot de mensajería, domicilios, mandados, transporte de personas y comercio local con IA",
+    "ubicacion": "Fonseca, La Guajira, Colombia",
+    "nombre_bot": "Fonsi",
+    "slogan": "¿Qué deseas? Te lo llevo en un 2x3",
+    "moneda_principal": "COP",
+    "soporte_multimoneda": ["COP", "USD"],
+    "version": "2.1.0",
+    "fecha_actualizacion": "2026-09-24",
+    "vps_ip": "89.117.72.233",
+    "plataforma_web_unificada": "http://89.117.72.233:3000",
+    "rastreo_clientes_url": "http://89.117.72.233:3000/track/FX-XXXX",
+    "bot_telegram": "@Fonsi2x3_bot",
+    "llave_bre_b": "@3506811888",
+    "titular_pago": "En un 2x3 Fonseca"
   },
-  stack_tecnologico: {
-    backend_bot: Node.js 20+ con TypeScript y OpenClaw / Telegraf,
-    ia_core: Google Gemini 2.5 Flash con soporte de Vision OCR,
-    base_de_datos: PostgreSQL 16 Relacional,
-    cache_y_sesiones: Redis 7 Alpine,
-    panel_de_control: Streamlit (Python 3.11) con metricas en tiempo real,
-    contenedorizacion: Docker & Docker Compose,
-    despliegue: Ubuntu 24.04 LTS en VPS Hostinger (89.117.72.233)
+  "stack_tecnologico": {
+    "backend_bot_y_web": "Node.js 20+ con TypeScript, Telegraf y SPA Unificada en puerto 3000",
+    "ia_core": "Google Gemini 2.5 Flash con Vision OCR Multimodal",
+    "base_de_datos": "PostgreSQL 16 Relacional con partida doble contable",
+    "cache_y_sesiones": "Redis 7 Alpine",
+    "analitica_bi": "Chart.js interactivo integrado en plataforma web :3000",
+    "rastreo_gps": "Leaflet.js + OpenStreetMap con transmisión en vivo vía Telegram Live Location",
+    "pagos_digitales": "Llave Universal Bre-B (@3506811888) + QR dinámico interoperable",
+    "despliegue": "Ubuntu 24.04 LTS en VPS (89.117.72.233) con Docker Compose"
   },
-  tarifas_y_reglas_negocio: {
-    mototaxi_urbano_base: 4000,
-    carro_urbano_base: 8000,
-    mandado_urbano_base: 6000,
-    domicilio_comida_base: 4000,
-    recargo_nocturno: 1000,
-    recargo_lluvia: 2000,
-    rutas_intermunicipales: {
-      fonseca_distraccion: 8000,
-      fonseca_san_juan: 15000,
-      fonseca_barrancas: 12000,
-      fonseca_villanueva: 25000,
-      fonseca_riohacha: 40000,
-      fonseca_valledupar: 35000
+  "tarifas_y_reglas_negocio": {
+    "mototaxi_urbano": {
+      "1_pasajero": 3000,
+      "2_pasajeros": 4000
     },
-    planes_publicidad: {
-      bronce: { precio: 50000, duracion_dias: 7, menciones_estados: 3 },
-      plata: { precio: 80000, duracion_dias: 15, menciones_estados: 8 },
-      oro: { precio: 110000, duracion_dias: 30, menciones_estados: 20 }
+    "domicilios_y_compras": {
+      "1_parada": 3000,
+      "2_paradas": 5000,
+      "3_paradas": 8000
+    },
+    "rutas_intermunicipales": {
+      "distraccion": 5000,
+      "barrancas": 8000,
+      "san_juan_del_cesar": 10000,
+      "el_molino": 15000,
+      "hatonuevo": 15000,
+      "villanueva": 20000,
+      "urumita": 20000,
+      "maicao": 30000,
+      "riohacha": 40000
+    },
+    "planes_publicidad": {
+      "bronce": { "precio": 50000, "duracion_dias": 7, "menciones_estados": 3 },
+      "plata": { "precio": 80000, "duracion_dias": 15, "menciones_estados": 8 },
+      "oro": { "precio": 110000, "duracion_dias": 30, "menciones_estados": 20 }
+    },
+    "politica_inactividad": {
+      "tiempo_limite_minutos": 20,
+      "notificacion": "Soberia y directa con reseteo automático de sesión"
     }
   },
-  fases: [
+  "fases": [
     {
-      fase: 0,
-      nombre: Fundamentos, Infraestructura Core y Personalidad,
-      estado: COMPLETADA,
-      progreso: 100,
-      objetivo: Establecer la infraestructura base, el cerebro de Fonsi y conectar los servicios minimos viables.,
-      entregables: [
-        Stack Docker: PostgreSQL 16, Redis 7 y Node.js 20+ en red interna bridge,
-        Esquema relacional completo: users, merchants, menu_items, orders, order_items, couriers, receipts, ledger, settlement_batches, trips, ad_contracts, status_posts,
-        Personalidad de Fonsi (SOUL.md / system prompt): Servidor amable guajiro, bilingue, calculos precisos, sin la frase 'De Una',
-        Integracion IA: Gemini 2.5 Flash con contexto de base de datos en tiempo real,
-        Pruebas en Telegram (@Fonsi2x3_bot) listas para migracion transparente a WhatsApp
+      "fase": 0,
+      "nombre": "Fundamentos, Infraestructura Core y Personalidad",
+      "estado": "COMPLETADA",
+      "progreso": 100,
+      "objetivo": "Establecer la infraestructura base, el cerebro de Fonsi y conectar los servicios mínimos viables.",
+      "entregables": [
+        "Stack Docker: PostgreSQL 16, Redis 7 y Node.js 20+ en red interna bridge",
+        "Esquema relacional completo: users, merchants, menu_items, orders, order_items, couriers, receipts, ledger, settlements, trips, ad_contracts, status_posts",
+        "Personalidad de Fonsi (SOUL.md / system prompt): Amable guajiro, conciso, cálculos exactos, prohibida la frase 'De Una'",
+        "Integración IA: Gemini 2.5 Flash con contexto de base de datos en tiempo real",
+        "Pruebas y despliegue en Telegram (@Fonsi2x3_bot)"
       ],
-      criterios_aceptacion: [
-        Contenedores Docker levantados y saludables,
-        Migraciones SQL aplicadas sin errores,
-        Bot responde en Telegram con la promesa de marca
+      "criterios_aceptacion": [
+        "Contenedores Docker levantados y saludables",
+        "Migraciones SQL aplicadas sin errores",
+        "Bot responde en Telegram con la promesa de marca"
       ]
     },
     {
-      fase: 1,
-      nombre: Atencion al Cliente, Catalogo en Vivo y Toma de Pedidos,
-      estado: COMPLETADA,
-      progreso: 100,
-      objetivo: Lograr que Fonsi atienda a los clientes de inicio a fin para comida y productos sin intervencion humana.,
-      entregables: [
-        Lectura de catalogos y menus de restaurantes aliados (La Jefa, Loquillo, etc.),
-        Gestion de carrito y generacion de ordenes con codigo unico (FX-####),
-        Conversion a USD para turistas cuando sea solicitado,
-        Manejo de espera silenciosa y resiliencia ante saturacion,
-        Creacion de registros formales en tabla 'orders' y 'order_items'
+      "fase": 1,
+      "nombre": "Atención al Cliente, Catálogo en Vivo y Toma de Pedidos",
+      "estado": "COMPLETADA",
+      "progreso": 100,
+      "objetivo": "Lograr que Fonsi atienda a los clientes de inicio a fin para comida y compras sin intervención humana.",
+      "entregables": [
+        "Lectura de catálogos y menús de restaurantes aliados (La Jefa, Loquillo, etc.)",
+        "Preguntas de precisión ante productos genéricos (gaseosa, cigarrillos, etc.)",
+        "Gestión de carrito y generación de órdenes con código único (FX-####)",
+        "Creación de registros formales en tabla 'orders' y 'order_items'"
       ],
-      tools_implementadas: [
-        catalog_browse.ts,
-        order_create.ts,
-        order_status.ts
+      "tools_implementadas": [
+        "catalog_browse.ts",
+        "order_create.ts",
+        "merchant_list.ts"
       ],
-      criterios_aceptacion: [
-        Generacion exitosa de orden FX con calculo exacto de subtotal + domicilio,
-        Consulta de estado de orden por parte del cliente
+      "criterios_aceptacion": [
+        "Generación exitosa de orden FX con cálculo exacto de subtotal + domicilio",
+        "Consulta de estado de orden por parte del cliente"
       ]
     },
     {
-      fase: 2,
-      nombre: OCR con IA Visual, Antifraude y Libro Mayor (Ledger),
-      estado: COMPLETADA,
-      progreso: 100,
-      objetivo: Validar comprobantes de pago (Nequi, Daviplata, Bre-B) y registrar asientos contables balanceados en partida doble.,
-      entregables: [
-        Modulo OCR con IA de vision para comprobantes Nequi, Daviplata, Bancolombia y Bre-B,
-        Filtro antifraude: verificacion de fecha actual, monto exacto, numero de referencia unico y destinatario,
-        Libro mayor contable en partida doble con validacion estricta de suma(debitos) == suma(creditos),
-        Modulo de liquidacion diaria para mensajeros (cierre de caja, comisiones y cuadre de efectivo)
+      "fase": 2,
+      "nombre": "OCR con IA Visual, Antifraude y Libro Mayor (Ledger)",
+      "estado": "COMPLETADA",
+      "progreso": 100,
+      "objetivo": "Validar comprobantes de pago (Bre-B, Nequi, Daviplata, Bancolombia) y registrar asientos contables balanceados.",
+      "entregables": [
+        "Módulo OCR con Gemini 2.5 Flash Vision para lectura instantánea de comprobantes",
+        "Filtro antifraude de comprobantes reciclados por número de referencia único",
+        "Libro mayor contable en partida doble con validación estricta SUM(débitos) == SUM(créditos)",
+        "Módulo de liquidación diaria para mensajeros (cierre de caja, comisiones y recaudo)"
       ],
-      tools_implementadas: [
-        receipt_ocr.ts,
-        payment_verify.ts,
-        ledger_post.ts,
-        courier_settle.ts
+      "tools_implementadas": [
+        "receipt_ocr.ts",
+        "payment_verify.ts",
+        "ledger_post.ts",
+        "courier_settle.ts"
       ],
-      criterios_aceptacion: [
-        Lectura correcta de pantallazos de transferencia,
-        Rechazo de comprobantes duplicados o falsificados,
-        Asientos de diario perfectamente balanceados
+      "criterios_aceptacion": [
+        "Lectura correcta de capturas de pantalla de comprobantes bancarios",
+        "Rechazo de comprobantes duplicados o con montos discrepantes",
+        "Asientos de diario perfectamente cuadrados"
       ]
     },
     {
-      fase: 3,
-      nombre: Mandados, Mototaxis, Logistica y Relay Anonimo,
-      estado: COMPLETADA,
-      progreso: 100,
-      objetivo: Cotizacion de transporte y mandados 'de lo que sea', calculo de ETAs y mensajeria anonima cliente-conductor.,
-      entregables: [
-        Cotizador urbano para mototaxi (.000), carro (.000), mandados (.000) y rutas intermunicipales,
-        Calculo de tiempos estimados de llegada (ETA) basados en zonas y barrios de Fonseca,
-        Sistema de relay anonimo de mensajes entre cliente y repartidor protegiendo la privacidad,
-        Asignacion de viajes en la tabla 'trips' con control de estado (requested, accepted, in_progress, completed)
+      "fase": 3,
+      "nombre": "Mandados, Mototaxis, Logística y Relay Anónimo",
+      "estado": "COMPLETADA",
+      "progreso": 100,
+      "objetivo": "Cotización de transporte y mandados, cálculo de ETAs y mensajería anónima cliente-conductor.",
+      "entregables": [
+        "Cotizador urbano para mototaxi ($3.000 / $4.000) y rutas intermunicipales",
+        "Cálculo de tiempos estimados de llegada (ETA) y asignación automática",
+        "Sistema de relay anónimo de mensajes entre cliente y repartidor protegiendo la privacidad",
+        "Asignación de viajes con control de estados y geolocalización"
       ],
-      tools_implementadas: [
-        fare_quote.ts,
-        eta_calculate.ts,
-        relay_message.ts
+      "tools_implementadas": [
+        "fare_quote.ts",
+        "eta_calculate.ts",
+        "relay_message.ts"
       ],
-      criterios_aceptacion: [
-        Cotizaciones instantaneas con desglose de recargos,
-        Calculo de ETA coherente con el trafico local,
-        Reenvio de mensajes enmascarados entre usuario y conductor
+      "criterios_aceptacion": [
+        "Cotizaciones instantáneas con desglose de tarifas oficiales",
+        "Cálculo de ETA coherente con zonas locales",
+        "Reenvío de mensajes enmascarados entre usuario y conductor"
       ]
     },
     {
-      fase: 4,
-      nombre: Publicidad, Pauta de Comercios y Generacion de Estados,
-      estado: COMPLETADA,
-      progreso: 100,
-      objetivo: Monetizacion publicitaria mediante contratos de pauta y publicacion periodica de estados en WhatsApp.,
-      entregables: [
-        Gestion de contratos de pauta (Planes Bronce , Plata , Oro ),
-        Publicacion y programacion de estados promocionales en 'status_posts',
-        Marcado de menciones patrocinadas (sponsored: true) para transparencia con la comunidad,
-        Gestion de vigencias y conteo de impresiones/menciones restantes
+      "fase": 4,
+      "nombre": "Publicidad, Pauta de Comercios y Generación de Estados",
+      "estado": "COMPLETADA",
+      "progreso": 100,
+      "objetivo": "Monetización publicitaria mediante contratos de pauta y publicación periódica de estados promocionales.",
+      "entregables": [
+        "Gestión de contratos de pauta (Planes Bronce $50k, Plata $80k, Oro $110k)",
+        "Publicación y programación de estados promocionales en 'status_posts'",
+        "Marcado de menciones patrocinadas (sponsored: true) para transparencia",
+        "Gestión de vigencias y conteo de impresiones restantes"
       ],
-      tools_implementadas: [
-        ad_close.ts,
-        status_publish.ts
+      "tools_implementadas": [
+        "ad_pitch.ts",
+        "ad_close.ts",
+        "status_publish.ts"
       ],
-      criterios_aceptacion: [
-        Creacion de contratos publicitarios vinculados a comercios,
-        Generacion automatica de copy optimizado para estados
+      "criterios_aceptacion": [
+        "Creación de contratos publicitarios vinculados a comercios",
+        "Generación automática de copys atractivos para estados"
       ]
     },
     {
-      fase: 5,
-      nombre: Plataforma de Control Web (Streamlit) y Despliegue VPS,
-      estado: COMPLETADA,
-      progreso: 100,
-      objetivo: Panel administrativo interactivo en tiempo real y despliegue robusto 24/7 en el servidor de produccion.,
-      entregables: [
-        Dashboard Web interactivo desarrollado en Streamlit montado en el puerto 8507,
-        Monitoreo de metricas clave (KPIs): Total Ordenes, Viajes, Balance de Caja, Mensajeros Activos,
-        Tablas dinamicas y visualizacion del Libro Mayor (Ledger), Comprobantes OCR y Contratos de Pauta,
-        Visualizador del Plan de Fases JSON integrado en la interfaz web,
-        Despliegue exitoso en Docker en el VPS 89.117.72.233 con persistencia de datos
+      "fase": 5,
+      "nombre": "Plataforma Web Unificada (:3000), Radar GPS y Analítica BI",
+      "estado": "COMPLETADA",
+      "progreso": 100,
+      "objetivo": "Unificar todo el ecosistema en un solo enlace responsivo con radar en tiempo real, BI y rastreo.",
+      "entregables": [
+        "Plataforma Web Única en puerto 3000 con 7 pestañas interactivas (Radar GPS, Pedidos, BI, Flota, Comercios, Ledger, Liquidaciones)",
+        "Rastreo interactivo en tiempo real para clientes en /track/:code con OpenStreetMap",
+        "Transmisión continua de coordenadas GPS de mototaxis vía Telegram Live Location",
+        "Módulo de Analítica BI con gráficos interactivos en Chart.js (ingresos, servicios, métodos de pago)",
+        "Ficha de seguridad de conductores para carros y viajes intermunicipales (WhatsApp directo, modelo, color, placa)",
+        "Integración de Llave Universal Bre-B (@3506811888) con QR interactivo",
+        "Temporizador de inactividad de 20 minutos con notificación sobria y reseteo de sesión"
       ],
-      criterios_aceptacion: [
-        Acceso web fluido en http://89.117.72.233:8507,
-        Sincronizacion instantanea con PostgreSQL en produccion,
-        Servicios activos 24/7 sin caidas
+      "criterios_aceptacion": [
+        "Acceso unificado y responsivo en http://89.117.72.233:3000 desde PC y celular",
+        "Rastreo GPS en tiempo real funcionando sin desfase",
+        "Flujo completo de pagos Bre-B y efectivo validado y cuadrado en contabilidad"
       ]
     }
   ],
-  entorno_produccion: {
-    ip: 89.117.72.233,
-    usuario: root,
-    directorio_base: /root/en-un-2x3,
-    puertos_mapeados: {
-      streamlit_dashboard: 8507,
-      bot_api_node: 3000,
-      postgresql_host: 5435,
-      redis_host: 6379
+  "entorno_produccion": {
+    "ip": "89.117.72.233",
+    "usuario": "root",
+    "directorio_base": "/root/en-un-2x3",
+    "puertos_mapeados": {
+      "plataforma_web_unificada_node": 3000,
+      "postgresql_host": 5435,
+      "redis_host": 6379,
+      "microservicio_dashboard_interno": 8507
     },
-    contenedores_docker: [
-      en-un-2x3-openclaw-1,
-      en-un-2x3-dashboard-1,
-      en-un-2x3-postgres-1,
-      en-un-2x3-redis-1
+    "contenedores_docker": [
+      "en-un-2x3-openclaw-1",
+      "en-un-2x3-postgres-1",
+      "en-un-2x3-redis-1",
+      "en-un-2x3-dashboard-1"
     ]
   }
 }
