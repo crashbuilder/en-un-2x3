@@ -24,6 +24,7 @@
     "analitica_bi": "Chart.js interactivo integrado en plataforma web :3000",
     "rastreo_gps": "Leaflet.js + OpenStreetMap con transmisión en vivo vía Telegram Live Location",
     "pagos_digitales": "Llave Universal Bre-B (@3506811888) + QR dinámico interoperable",
+    "watchdog_resiliencia": "Recuperador periódico automático de pedidos retrasados cada 5 min",
     "despliegue": "Ubuntu 24.04 LTS en VPS (89.117.72.233) con Docker Compose"
   },
   "tarifas_y_reglas_negocio": {
@@ -54,7 +55,13 @@
     },
     "politica_inactividad": {
       "tiempo_limite_minutos": 20,
-      "notificacion": "Soberia y directa con reseteo automático de sesión"
+      "notificacion": "Sobria y directa con reseteo automático de sesión"
+    },
+    "politica_recuperacion_retrasos": {
+      "tiempo_maximo_retraso_minutos": 45,
+      "intervalo_auditoria_watchdog_minutos": 5,
+      "accion_automatica": "Reactivación a CONFIRMED, desvinculación de conductor inactivo y reasignación inmediata a conductor activo en zona",
+      "comandos_manuales_operador": ["/recuperar", "/retrasos", "/auditar"]
     }
   },
   "fases": [
@@ -125,24 +132,29 @@
     },
     {
       "fase": 3,
-      "nombre": "Mandados, Mototaxis, Logística y Relay Anónimo",
+      "nombre": "Mandados, Mototaxis, Logística, Reasignación y Relay Anónimo",
       "estado": "COMPLETADA",
       "progreso": 100,
-      "objetivo": "Cotización de transporte y mandados, cálculo de ETAs y mensajería anónima cliente-conductor.",
+      "objetivo": "Cotización de transporte y mandados, cálculo de ETAs, watchdog de rescate de pedidos demorados y mensajería anónima.",
       "entregables": [
         "Cotizador urbano para mototaxi ($3.000 / $4.000) y rutas intermunicipales",
-        "Cálculo de tiempos estimados de llegada (ETA) y asignación automática",
+        "Calculo de tiempos estimados de llegada (ETA) y asignación automática",
+        "Watchdog recurrente cada 5 minutos para rescatar pedidos con >45 min sin entregar y reasignarlos a flota activa",
+        "Comandos de auditoría de operadores en Telegram (/recuperar, /retrasos, /auditar)",
         "Sistema de relay anónimo de mensajes entre cliente y repartidor protegiendo la privacidad",
         "Asignación de viajes con control de estados y geolocalización"
       ],
       "tools_implementadas": [
         "fare_quote.ts",
         "eta_calculate.ts",
-        "relay_message.ts"
+        "relay_message.ts",
+        "recover_stuck_orders.ts",
+        "dispatch_assign.ts"
       ],
       "criterios_aceptacion": [
         "Cotizaciones instantáneas con desglose de tarifas oficiales",
         "Cálculo de ETA coherente con zonas locales",
+        "Rescate y reasignación automática de órdenes estancadas sin intervención manual",
         "Reenvío de mensajes enmascarados entre usuario y conductor"
       ]
     },
@@ -173,7 +185,7 @@
       "nombre": "Plataforma Web Unificada (:3000), Radar GPS y Analítica BI",
       "estado": "COMPLETADA",
       "progreso": 100,
-      "objetivo": "Unificar todo el ecosistema en un solo enlace responsivo con radar en tiempo real, BI y rastreo.",
+      "objetivo": "Unificar todo el ecosistema en un solo enlace responsivo con radar en tiempo real, BI, watchdog y rastreo.",
       "entregables": [
         "Plataforma Web Única en puerto 3000 con 7 pestañas interactivas (Radar GPS, Pedidos, BI, Flota, Comercios, Ledger, Liquidaciones)",
         "Rastreo interactivo en tiempo real para clientes en /track/:code con OpenStreetMap",
@@ -181,6 +193,7 @@
         "Módulo de Analítica BI con gráficos interactivos en Chart.js (ingresos, servicios, métodos de pago)",
         "Ficha de seguridad de conductores para carros y viajes intermunicipales (WhatsApp directo, modelo, color, placa)",
         "Integración de Llave Universal Bre-B (@3506811888) con QR interactivo",
+        "Watchdog de fondo cada 5 minutos para auto-rescate de pedidos demorados",
         "Temporizador de inactividad de 20 minutos con notificación sobria y reseteo de sesión"
       ],
       "criterios_aceptacion": [
