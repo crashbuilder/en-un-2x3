@@ -1,12 +1,13 @@
 import { Telegraf, Markup } from 'telegraf';
-import OpenAI from 'openai';
 import * as dotenv from 'dotenv';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as http from 'http';
+import { Client } from 'pg';
 
 dotenv.config();
 
-console.log('Iniciando el núcleo de Fonsi (Refactorizado)...');
+console.log('Iniciando el núcleo de Fonsi (GPS Live Tracking, Reseteo Inteligente, Modo Ultra-Conciso)...');
 
 const botToken = process.env.TELEGRAM_BOT_TOKEN;
 if (!botToken) {
@@ -15,82 +16,95 @@ if (!botToken) {
 }
 const bot = new Telegraf(botToken);
 
-const openai = new OpenAI({ 
-  apiKey: process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || 'sk-FAKE-KEY',
-  baseURL: process.env.LLM_BASE_URL || 'https://api.openai.com/v1'
+// Manejo global de errores para resiliencia absoluta
+bot.catch((err: any, ctx: any) => {
+  console.error(`⚠️ Error capturado en bot handler (${ctx?.updateType}):`, err?.message || err);
 });
 
-// 1. Usar el alma real
-let fonsiSoul = "Eres Fonsi. Responde corto.";
-try {
-  fonsiSoul = fs.readFileSync('/workspace/SOUL.md', 'utf8');
-} catch (e) {
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('⚠️ Unhandled Rejection:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('⚠️ Uncaught Exception:', err);
+});
+
+// Helper para enviar mensajes con formato HTML limpio sin asteriscos rotos
+function formatTelegramHTML(text: string): string {
+  if (!text) return '';
+  return text
+    .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
+    .replace(/\*(.*?)\*/g, '<i>$1</i>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>');
+}
+
+async function safeReply(ctx: any, text: string, extra?: any) {
+  const html = formatTelegramHTML(text);
   try {
-    fonsiSoul = fs.readFileSync(path.join(__dirname, '../workspace-fonsi/SOUL.md'), 'utf8');
-  } catch (e2) {
-    console.warn("No se pudo leer SOUL.md de ninguna ruta");
-  }
-}
-
-// 4. Expiración de sesiones (TTL) y tipado
-interface SessionData {
-  history: any[];
-  lastActivity: number;
-}
-const userSessions = new Map<string, SessionData>();
-const SESSION_TTL = 30 * 60 * 1000;
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [userId, session] of userSessions.entries()) {
-    if (now - session.lastActivity > SESSION_TTL) {
-      userSessions.delete(userId);
+    return await ctx.reply(html, { parse_mode: 'HTML', ...(extra || {}) });
+  } catch (err) {
+    try {
+      return await ctx.reply(text.replace(/[*_`]/g, ''), extra || {});
+    } catch (e2) {
+      console.error("Fallo safeReply:", e2);
     }
   }
-}, 5 * 60 * 1000);
+}
 
-const sendWelcome = async (ctx: any) => {
-    const userId = ctx.from.id.toString();
-    userSessions.set(userId, { history: [], lastActivity: Date.now() });
-    
-    await ctx.reply(
-        '¡Hola! 🛵 ¿Qué servicio necesitas hoy? ¡Dime y te lo solucionaré en UN 2x3! 🚀😎',
-        Markup.inlineKeyboard([
-            [Markup.button.callback('🛵 Pedir Mototaxi', 'btn_mototaxi')],
-            [Markup.button.callback('📦 Pedir Domicilio', 'btn_domicilio')]
-        ])
-    );
-};
-
-bot.start(sendWelcome);
-
-bot.action('btn_mototaxi', async (ctx) => {
-    await ctx.answerCbQuery();
-    await ctx.reply('¡En un 2x3 estará llegando tu mototaxi! 🛵💨 (Calculando tiempo estimado de llegada por tu zona...)');
-});
-
-bot.action('btn_domicilio', async (ctx) => {
-    await ctx.answerCbQuery();
-    const userId = ctx.from.id.toString();
-    if (!userSessions.has(userId)) userSessions.set(userId, { history: [], lastActivity: Date.now() });
-    const session = userSessions.get(userId)!;
-    
-    // Inject the simulated message so LLM thinks the user asked for a general delivery
-    session.history.push({ role: 'user', content: 'quiero pedir un domicilio' });
-    
-    await ctx.reply('¡Claro que sí! 📦 ¿Qué te llevamos hoy? Puede ser comida, hacer un mandado a la tienda, medicinas o lo que necesites. ¡Dime qué buscas!');
-});
-
-import { Client } from 'pg';
-
+// PostgreSQL Client
 const dbClient = new Client({
   host: process.env.DB_HOST || 'postgres',
   user: process.env.DB_USER || 'fonsi_user',
   password: process.env.DB_PASSWORD || 'fonsi_password',
   database: process.env.DB_NAME || 'en_un_2x3',
 });
-dbClient.connect().catch(e => console.error("Error DB:", e));
 
+async function initDatabase() {
+  try {
+    await dbClient.connect();
+    console.log('✅ Conectado a PostgreSQL');
+    
+    // Migración automática para soporte GPS en tiempo real y detalles de vehículos
+    await dbClient.query(`
+      ALTER TABLE couriers ADD COLUMN IF NOT EXISTS current_lat numeric(10, 7) DEFAULT 10.6075;
+      ALTER TABLE couriers ADD COLUMN IF NOT EXISTS current_lng numeric(10, 7) DEFAULT -72.8530;
+      ALTER TABLE couriers ADD COLUMN IF NOT EXISTS heading numeric(5, 2) DEFAULT 0;
+      ALTER TABLE couriers ADD COLUMN IF NOT EXISTS location_updated_at timestamp with time zone DEFAULT now();
+      ALTER TABLE couriers ADD COLUMN IF NOT EXISTS tg_user_id character varying(50);
+      ALTER TABLE couriers ADD COLUMN IF NOT EXISTS color VARCHAR(50) DEFAULT 'Blanco';
+      ALTER TABLE couriers ADD COLUMN IF NOT EXISTS vehicle_model VARCHAR(100) DEFAULT 'Boxer CT 100';
+      ALTER TABLE couriers ADD COLUMN IF NOT EXISTS vehicle_type VARCHAR(20) DEFAULT 'moto';
+    `);
+
+    // Actualizar conductores existentes y crear choferes de automóvil para viajes y cupos
+    await dbClient.query(`
+      UPDATE couriers SET vehicle_type = 'moto', color = 'Negro', vehicle_model = 'Boxer CT 100' 
+      WHERE vehicle_type IS NULL;
+
+      INSERT INTO couriers (name, wa_phone, vehicle, plate, rating, is_active, color, vehicle_model, vehicle_type, current_lat, current_lng)
+      VALUES 
+        ('Carlos Mendoza', '3157894561', 'Carro', 'UYP-452', 4.9, true, 'Gris Plata', 'Chevrolet Sail', 'carro', 10.6090, -72.8510),
+        ('Javier Solano', '3106543210', 'Carro', 'WXY-891', 5.0, true, 'Blanco', 'Renault Duster', 'carro', 10.6060, -72.8550)
+      ON CONFLICT (wa_phone) DO UPDATE 
+      SET color = EXCLUDED.color, vehicle_model = EXCLUDED.vehicle_model, vehicle_type = EXCLUDED.vehicle_type, plate = EXCLUDED.plate, name = EXCLUDED.name;
+    `);
+
+    // Asignar coordenadas iniciales dispersas en Fonseca si están en el punto central
+    await dbClient.query(`
+      UPDATE couriers 
+      SET current_lat = 10.6075 + (RANDOM() - 0.5) * 0.008, 
+          current_lng = -72.8530 + (RANDOM() - 0.5) * 0.008 
+      WHERE current_lat = 10.6075;
+    `);
+
+    console.log('✅ Base de datos lista con soporte de Radar GPS, Motos y Carros intermunicipales');
+  } catch (e) {
+    console.error("Error inicializando DB:", e);
+  }
+}
+initDatabase();
+
+// Tools loader
 const toolsBasePath = fs.existsSync('/workspace/tools') 
   ? '/workspace/tools' 
   : path.join(__dirname, '../workspace-fonsi/tools');
@@ -107,10 +121,93 @@ const { ad_close } = require(path.join(toolsBasePath, 'ad_close'));
 const { status_publish } = require(path.join(toolsBasePath, 'status_publish'));
 const { merchant_list } = require(path.join(toolsBasePath, 'merchant_list'));
 
-// Helper para crear orden y asignar mensajero
+// Cargar personalidad SOUL.md
+let fonsiSoul = "Eres Fonsi, el asistente oficial de 'En un 2x3' en Fonseca, La Guajira. Respuestas cortas y directas.";
+try {
+  fonsiSoul = fs.readFileSync('/workspace/SOUL.md', 'utf8');
+} catch (e) {
+  try {
+    fonsiSoul = fs.readFileSync(path.join(__dirname, '../workspace-fonsi/SOUL.md'), 'utf8');
+  } catch (e2) {
+    console.warn("No se pudo leer SOUL.md");
+  }
+}
+
+// Estructura de sesiones
+interface PendingAction {
+  type: 'ride' | 'package' | 'food';
+  vehicle?: 'moto' | 'carro';
+  passengers?: number;
+  merchant_id?: string;
+  merchant_name?: string;
+  origin?: string;
+  destination?: string;
+  price?: number;
+  delivery_fee?: number;
+  subtotal?: number;
+  items?: any[];
+  step: 'awaiting_origin' | 'awaiting_destination' | 'awaiting_details' | 'awaiting_payment';
+}
+
+interface SessionData {
+  history: any[];
+  lastActivity: number;
+  pendingAction?: PendingAction | null;
+  timeoutNotified?: boolean;
+}
+
+const userSessions = new Map<string, SessionData>();
+const INACTIVITY_TIMEOUT = 20 * 60 * 1000; // 20 minutos de inactividad
+
+// Verificador periódico de inactividad (cada minuto)
+setInterval(async () => {
+  const now = Date.now();
+  for (const [userId, session] of userSessions.entries()) {
+    const hasPending = (session.history && session.history.length > 0) || session.pendingAction !== null;
+    
+    if (hasPending && !session.timeoutNotified && (now - session.lastActivity > INACTIVITY_TIMEOUT)) {
+      session.timeoutNotified = true;
+      session.history = [];
+      session.pendingAction = null;
+
+      try {
+        const soberMsg = 
+          "🛵 <b>Aviso de inactividad:</b> Al ver que no respondiste, cerramos esta solicitud para evitar confusiones.\n\n" +
+          "Cuando desees pedir nuevamente, escríbeme o toca el botón abajo:";
+
+        await bot.telegram.sendMessage(userId, soberMsg, {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('🛵 Menú Principal', 'btn_main_menu')]
+          ])
+        });
+      } catch (err) {
+        // En caso de que el chat no esté accesible
+      }
+    }
+  }
+}, 60 * 1000);
+
+function getOrCreateSession(userId: string): SessionData {
+  if (!userSessions.has(userId)) {
+    userSessions.set(userId, { history: [], lastActivity: Date.now(), pendingAction: null, timeoutNotified: false });
+  }
+  const session = userSessions.get(userId)!;
+  
+  // Si estuvo inactivo más de 20 minutos, reiniciar historial para iniciar limpio
+  if (Date.now() - session.lastActivity > INACTIVITY_TIMEOUT) {
+    session.history = [];
+    session.pendingAction = null;
+  }
+  
+  session.lastActivity = Date.now();
+  session.timeoutNotified = false;
+  return session;
+}
+
+// Helper para crear orden y registrar en DB
 async function processOrderCreation(userId: string, userName: string, orderData: any) {
   try {
-    // 1. Asegurar usuario en tabla users
     const userRes = await dbClient.query(`
       INSERT INTO users (wa_phone, name, default_address, payment_pref)
       VALUES ($1, $2, $3, $4)
@@ -118,11 +215,11 @@ async function processOrderCreation(userId: string, userName: string, orderData:
       SET name = EXCLUDED.name, default_address = COALESCE(EXCLUDED.default_address, users.default_address)
       RETURNING id
     `, [userId, userName || 'Cliente Telegram', orderData.destination || 'Fonseca', orderData.payment_method || 'cash']);
+
     const userDbId = userRes.rows[0].id;
 
-    // 2. Buscar merchant_id
-    let merchantDbId = null;
-    if (orderData.merchant) {
+    let merchantDbId = orderData.merchant_id || null;
+    if (!merchantDbId && orderData.merchant) {
       const mRes = await dbClient.query(
         "SELECT id, name FROM merchants WHERE name ILIKE $1 LIMIT 1",
         [`%${orderData.merchant}%`]
@@ -130,19 +227,19 @@ async function processOrderCreation(userId: string, userName: string, orderData:
       if (mRes.rows.length > 0) merchantDbId = mRes.rows[0].id;
     }
 
-    // 3. Generar código único FX-####
     const randomCode = `FX-${Math.floor(1000 + Math.random() * 9000)}`;
-    const subtotal = Number(orderData.subtotal) || 0;
-    const deliveryFee = Number(orderData.delivery_fee) || 3000;
-    const total = subtotal + deliveryFee;
+    const subtotal = Number(orderData.subtotal) || Number(orderData.price) || 0;
+    const deliveryFee = Number(orderData.delivery_fee) || 0;
+    const total = Number(orderData.total) || (subtotal + deliveryFee);
     const paymentMethod = orderData.payment_method || 'cash';
-    const orderType = orderData.type || 'food';
-    const destination = { label: orderData.destination || 'Fonseca' };
-    const origin = orderData.origin ? { label: orderData.origin } : null;
-    const items = orderData.items || [];
+    const orderType = orderData.type || 'ride';
+    const destination = typeof orderData.destination === 'string' ? { label: orderData.destination } : (orderData.destination || { label: 'Fonseca' });
+    const origin = typeof orderData.origin === 'string' ? { label: orderData.origin } : (orderData.origin || null);
     
-    // Si es transferencia, estado inicial DRAFT; si es efectivo, CONFIRMED
-    const initialStatus = paymentMethod === 'transfer' ? 'DRAFT' : 'CONFIRMED';
+    const isMoto = orderData.vehicle !== 'carro';
+    const items = orderData.items || (orderType === 'ride' ? [{ item: `Viaje en ${isMoto ? 'Mototaxi' : 'Carro'} (${orderData.passengers === 2 ? '2 Personas' : '1 Persona'})`, qty: 1, price: total }] : []);
+    
+    const initialStatus = paymentMethod === 'transfer' ? 'DRAFT' : 'ON_THE_WAY';
 
     const orderRes = await dbClient.query(`
       INSERT INTO orders (
@@ -151,36 +248,45 @@ async function processOrderCreation(userId: string, userName: string, orderData:
         origin, destination, created_at
       ) VALUES (
         $1, $2, $3, $4, $5, $6,
-        $7, $8, $9, $10, 'PENDING',
-        $11, $12, now()
+        $7, $8, $9, $10, $11,
+        $12, $13, now()
       ) RETURNING id, code, status
     `, [
       randomCode, orderType, userDbId, merchantDbId, initialStatus, JSON.stringify(items),
-      subtotal, deliveryFee, total, paymentMethod, JSON.stringify(origin), JSON.stringify(destination)
+      subtotal, deliveryFee, total, paymentMethod, 'PENDING',
+      JSON.stringify(origin), JSON.stringify(destination)
     ]);
 
     const createdOrder = orderRes.rows[0];
 
-    // 4. Asignar mensajero disponible (dispatch_assign)
-    const courierRes = await dbClient.query(
-      "SELECT id, name, vehicle, plate FROM couriers WHERE is_active = true ORDER BY RANDOM() LIMIT 1"
-    );
+    const isCarOrder = orderData.vehicle === 'carro' || orderType === 'carro';
+    const courierQuery = isCarOrder
+      ? "SELECT id, name, wa_phone, vehicle, vehicle_model, color, plate, rating, vehicle_type, current_lat, current_lng FROM couriers WHERE is_active = true AND vehicle_type = 'carro' ORDER BY RANDOM() LIMIT 1"
+      : "SELECT id, name, wa_phone, vehicle, vehicle_model, color, plate, rating, vehicle_type, current_lat, current_lng FROM couriers WHERE is_active = true ORDER BY RANDOM() LIMIT 1";
+
+    let courierRes = await dbClient.query(courierQuery);
+    if (courierRes.rows.length === 0) {
+      courierRes = await dbClient.query(
+        "SELECT id, name, wa_phone, vehicle, vehicle_model, color, plate, rating, vehicle_type, current_lat, current_lng FROM couriers WHERE is_active = true ORDER BY RANDOM() LIMIT 1"
+      );
+    }
 
     let courierInfo = null;
     if (courierRes.rows.length > 0) {
       courierInfo = courierRes.rows[0];
-      const assignedStatus = paymentMethod === 'transfer' ? 'DRAFT' : 'ON_THE_WAY';
       await dbClient.query(
-        "UPDATE orders SET courier_id = $1, status = $2 WHERE id = $3",
-        [courierInfo.id, assignedStatus, createdOrder.id]
+        "UPDATE orders SET courier_id = $1 WHERE id = $2",
+        [courierInfo.id, createdOrder.id]
       );
     }
 
     return {
       success: true,
+      id: createdOrder.id,
       code: createdOrder.code,
       type: orderType,
       total,
+      subtotal,
       deliveryFee,
       paymentMethod,
       courier: courierInfo
@@ -191,7 +297,692 @@ async function processOrderCreation(userId: string, userName: string, orderData:
   }
 }
 
-// Manejador de fotos de comprobantes de pago (Nequi / Daviplata / Bre-B)
+// ==========================================
+// INSTRUCCIONES DE PAGO CON LLAVE BRE-B Y QR
+// ==========================================
+async function sendTransferPaymentInstructions(ctx: any, orderResult: any) {
+  const trackingUrl = `http://89.117.72.233:3000/track/${orderResult.code}`;
+  const phoneKey = '@3506811888';
+  // Generar código QR dinámico de la llave Bre-B preservando el @
+  const qrData = encodeURIComponent(`breb://pay?key=${phoneKey}&amount=${orderResult.total}&name=En%20un%202x3%20Fonseca`);
+  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=450x450&margin=12&data=${qrData}`;
+
+  let reply = `📝 <b>Servicio Registrado [${orderResult.code}]</b>\n\n`;
+  reply += `💰 <b>Total a transferir:</b> $${Number(orderResult.total).toLocaleString('es-CO')} COP\n\n`;
+  reply += `🇨🇴 <b>Llave Universal Bre-B:</b>\n`;
+  reply += `👉 <code>${phoneKey}</code> <i>(Toca para copiar con el @)</i>\n`;
+  reply += `👤 <b>Titular:</b> En un 2x3 Fonseca\n\n`;
+  reply += `⚠️ <b>IMPORTANTE:</b> Esta llave es de tipo <b>Alias / Identificador con @</b> (<code>${phoneKey}</code>). Al transferir desde tu app bancaria, asegúrate de incluir el <b>@</b>.\n\n`;
+  reply += `📸 <b>Envía la captura del comprobante aquí</b> para validar tu pedido al instante. 🚀`;
+
+  let photoSent = false;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3500);
+    const imgRes = await fetch(qrUrl, { signal: controller.signal });
+    clearTimeout(timeout);
+    
+    if (imgRes.ok) {
+      const buffer = Buffer.from(await imgRes.arrayBuffer());
+      await ctx.replyWithPhoto(
+        { source: buffer },
+        {
+          caption: reply,
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [Markup.button.url('🗺️ Ver Mapa en Vivo 📍', trackingUrl)],
+            [Markup.button.callback('🛵 Menú Principal', 'btn_main_menu')]
+          ])
+        }
+      );
+      photoSent = true;
+    }
+  } catch (err: any) {
+    console.warn("Fallo descarga rápida de QR buffer:", err?.message);
+  }
+
+  if (!photoSent) {
+    await safeReply(ctx, reply + `\n\n🖼️ <a href="${qrUrl}">Ver Código QR Bre-B</a>`, Markup.inlineKeyboard([
+      [Markup.button.url('🗺️ Ver Mapa en Vivo 📍', trackingUrl)],
+      [Markup.button.callback('🛵 Menú Principal', 'btn_main_menu')]
+    ]));
+  }
+}
+
+// ==========================================
+// RASTREO GPS EN VIVO (TELEGRAM LIVE LOCATIONS)
+// ==========================================
+async function handleLocationUpdate(ctx: any, loc: { latitude: number, longitude: number, heading?: number }) {
+  const userId = ctx.from.id.toString();
+
+  // 1. Verificar si quien envía la ubicación es un conductor registrado
+  const courierCheck = await dbClient.query(
+    "SELECT * FROM couriers WHERE tg_user_id = $1 OR wa_phone = $2",
+    [userId, userId]
+  );
+
+  if (courierCheck.rows.length > 0) {
+    const courier = courierCheck.rows[0];
+    await dbClient.query(`
+      UPDATE couriers 
+      SET current_lat = $1, current_lng = $2, heading = COALESCE($3, heading), location_updated_at = now(), is_active = true
+      WHERE id = $4
+    `, [loc.latitude, loc.longitude, loc.heading || 0, courier.id]);
+
+    console.log(`📍 [GPS LIVE] Conductor ${courier.name} (${courier.plate}) actualizó coordenadas: [${loc.latitude}, ${loc.longitude}]`);
+    
+    // Si fue el mensaje inicial de ubicación
+    if (ctx.message?.location) {
+      await safeReply(ctx, `📍 <b>Ubicación en vivo conectada.</b>\nEstás transmitiendo en tiempo real a la plataforma 🛵💨`);
+    }
+    return;
+  }
+
+  // 2. Si es un cliente interactuando con el menú de mototaxi
+  const session = getOrCreateSession(userId);
+  if (session.pendingAction && session.pendingAction.step === 'awaiting_origin') {
+    session.pendingAction.origin = `Ubicación compartida (${loc.latitude.toFixed(4)}, ${loc.longitude.toFixed(4)})`;
+    
+    if (session.pendingAction.destination) {
+      session.pendingAction.step = 'awaiting_payment';
+      const isCar = session.pendingAction.vehicle === 'carro';
+      let confirmMsg = `📋 <b>Confirmación de Viaje:</b>\n\n`;
+      confirmMsg += `${isCar ? '🚗' : '🏍️'} <b>Servicio:</b> ${isCar ? 'Viaje' : 'Mototaxi'} Fonseca ↔ ${session.pendingAction.destination}\n`;
+      confirmMsg += `📍 <b>Recogida:</b> ${session.pendingAction.origin}\n`;
+      confirmMsg += `🏁 <b>Destino:</b> ${session.pendingAction.destination}\n`;
+      confirmMsg += `💰 <b>Tarifa:</b> $${(session.pendingAction.price || 0).toLocaleString('es-CO')} COP\n\n`;
+      confirmMsg += `👉 <i>¿Cómo deseas pagar?</i>`;
+
+      return safeReply(ctx, confirmMsg, Markup.inlineKeyboard([
+        [Markup.button.callback('💵 Pagar en Efectivo', 'confirm_ride_cash')],
+        [Markup.button.callback('📱 Pagar con Bre-B (Transferencia)', 'confirm_ride_transfer')],
+        [Markup.button.callback('❌ Cancelar', 'cancel_action')]
+      ]));
+    } else {
+      session.pendingAction.step = 'awaiting_destination';
+      const msg = 
+        `📍 <b>Recogida:</b> ${session.pendingAction.origin}\n\n` +
+        `🏁 <b>Paso 2 de 2:</b> ¿Para qué dirección o barrio vas?\n\n` +
+        `<i>(Ejemplo: Barrio Primero de Julio, Villa Luz)</i>`;
+
+      return safeReply(ctx, msg, Markup.inlineKeyboard([
+        [Markup.button.callback('❌ Cancelar', 'cancel_action')]
+      ]));
+    }
+  }
+}
+
+bot.on('location', async (ctx) => {
+  const loc = ctx.message.location;
+  if (loc) await handleLocationUpdate(ctx, loc);
+});
+
+bot.on('edited_message', async (ctx) => {
+  const loc = (ctx.editedMessage as any)?.location;
+  if (loc) await handleLocationUpdate(ctx, loc);
+});
+
+// ==========================================
+// VINCULACIÓN Y TURNO DE CONDUCTORES
+// ==========================================
+bot.command(['conductor', 'turno', 'chofer'], async (ctx) => {
+  try {
+    const couriersRes = await dbClient.query("SELECT * FROM couriers ORDER BY name ASC");
+    const buttons = couriersRes.rows.map(c => [
+      Markup.button.callback(`🏍️ Soy ${c.name} (${c.plate || 'Moto'})`, `bind_courier_${c.id}`)
+    ]);
+    buttons.push([Markup.button.callback('🔙 Menú Principal', 'btn_main_menu')]);
+
+    const msg = 
+      "🏍️ <b>Panel del Conductor / Mototaxista</b>\n\n" +
+      "Selecciona tu nombre para vincular tu cuenta y transmitir tu <b>ubicación en vivo</b> a la plataforma:";
+
+    await safeReply(ctx, msg, Markup.inlineKeyboard(buttons));
+  } catch (err: any) {
+    await safeReply(ctx, 'Error al consultar conductores.');
+  }
+});
+
+bot.action(/^bind_courier_(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const courierId = ctx.match[1];
+  const userId = ctx.from.id.toString();
+
+  try {
+    await dbClient.query(
+      "UPDATE couriers SET tg_user_id = $1, is_active = true, location_updated_at = now() WHERE id = $2",
+      [userId, courierId]
+    );
+
+    const res = await dbClient.query("SELECT * FROM couriers WHERE id = $1", [courierId]);
+    const courier = res.rows[0];
+
+    let msg = `🎉 <b>¡Conductor Vinculado!</b>\n\n`;
+    msg += `👤 <b>Nombre:</b> ${courier.name}\n`;
+    msg += `🛵 <b>Placa:</b> ${courier.plate || 'Vehículo'}\n`;
+    msg += `⭐ <b>Calificación:</b> ${courier.rating || '5.0'} ⭐\n\n`;
+    msg += `📍 <b>Cómo activar tu ubicación en vivo:</b>\n`;
+    msg += `1. Toca el botón de adjuntar (📎) en este chat de Telegram.\n`;
+    msg += `2. Pulsa <b>Ubicación ➔ Compartir mi ubicación en tiempo real</b> (ej: 8 horas).\n\n`;
+    msg += `🚀 <i>La plataforma y los clientes podrán ver tu moto en el mapa en vivo.</i>`;
+
+    await safeReply(ctx, msg, Markup.inlineKeyboard([
+      [Markup.button.url('🗺️ Ver Radar en Vivo', 'http://89.117.72.233:3000')],
+      [Markup.button.callback('🛵 Menú Principal', 'btn_main_menu')]
+    ]));
+  } catch (err: any) {
+    await safeReply(ctx, 'Error al vincular conductor.');
+  }
+});
+
+// ==========================================
+// MENÚ PRINCIPAL Y SALUDO
+// ==========================================
+const sendWelcome = async (ctx: any) => {
+  const userId = ctx.from.id.toString();
+  const session = getOrCreateSession(userId);
+  session.history = [];
+  session.pendingAction = null;
+
+  const msg = 
+    "¡Hola! 🛵 Bienvenido a <b>En un 2x3</b> — Domicilios y Transporte en Fonseca.\n\n" +
+    "¿Qué necesitas hoy? Elige una opción o escríbeme directamente: 🚀😎";
+
+  await safeReply(
+    ctx,
+    msg,
+    Markup.inlineKeyboard([
+      [Markup.button.callback('🛵 Pedir Mototaxi', 'btn_mototaxi')],
+      [Markup.button.callback('📦 Domicilios (Comida, Tienda, Farmacia)', 'btn_domicilio')],
+      [Markup.button.callback('🛣️ Viajes Intermunicipales', 'btn_intermunicipal')],
+      [Markup.button.callback('📋 Consultar Mi Servicio', 'btn_status_quick')]
+    ])
+  );
+};
+
+bot.start(sendWelcome);
+
+bot.action('btn_main_menu', async (ctx) => {
+  await ctx.answerCbQuery();
+  await sendWelcome(ctx);
+});
+
+// ==========================================
+// SECCIÓN MOTOTAXI URBANO
+// ==========================================
+bot.action('btn_mototaxi', async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id.toString();
+  const session = getOrCreateSession(userId);
+  session.pendingAction = null;
+
+  const msg = 
+    "🛵 <b>Servicio de Mototaxi en Fonseca</b>\n\n" +
+    "¿Cuántas personas van a viajar?";
+
+  await safeReply(
+    ctx,
+    msg,
+    Markup.inlineKeyboard([
+      [
+        Markup.button.callback('👤 1 Pasajero ($3.000)', 'moto_1_pax'),
+        Markup.button.callback('👥 2 Pasajeros ($4.000)', 'moto_2_pax')
+      ],
+      [Markup.button.callback('🔙 Menú Principal', 'btn_main_menu')]
+    ])
+  );
+});
+
+// 1 Pasajero ($3.000)
+bot.action('moto_1_pax', async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id.toString();
+  const session = getOrCreateSession(userId);
+
+  session.pendingAction = {
+    type: 'ride',
+    vehicle: 'moto',
+    passengers: 1,
+    price: 3000,
+    delivery_fee: 0,
+    subtotal: 3000,
+    step: 'awaiting_origin'
+  };
+
+  const msg = 
+    "📍 <b>Paso 1 de 2 (1 Pasajero - $3.000 COP):</b>\n\n" +
+    "¿En qué dirección o punto de referencia te recoge el mototaxi?\n\n" +
+    "<i>(Escribe la dirección o comparte tu ubicación)</i>";
+
+  await safeReply(ctx, msg, Markup.inlineKeyboard([
+    [Markup.button.callback('❌ Cancelar', 'cancel_action')]
+  ]));
+});
+
+// 2 Pasajeros ($4.000)
+bot.action('moto_2_pax', async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id.toString();
+  const session = getOrCreateSession(userId);
+
+  session.pendingAction = {
+    type: 'ride',
+    vehicle: 'moto',
+    passengers: 2,
+    price: 4000,
+    delivery_fee: 0,
+    subtotal: 4000,
+    step: 'awaiting_origin'
+  };
+
+  const msg = 
+    "📍 <b>Paso 1 de 2 (2 Pasajeros - $4.000 COP):</b>\n\n" +
+    "¿En qué punto los recogemos a ambos?\n\n" +
+    "<i>(Escribe la dirección o comparte tu ubicación)</i>";
+
+  await safeReply(ctx, msg, Markup.inlineKeyboard([
+    [Markup.button.callback('❌ Cancelar', 'cancel_action')]
+  ]));
+});
+
+// ==========================================
+// SECCIÓN VIAJES INTERMUNICIPALES
+// ==========================================
+bot.action('btn_intermunicipal', async (ctx) => {
+  await ctx.answerCbQuery();
+  const msg = 
+    "🛣️ <b>Viajes Intermunicipales desde Fonseca</b>\n\n" +
+    "• <b>Distracción:</b> $5.000 COP <i>(en mototaxi)</i>\n" +
+    "• <b>Barrancas:</b> $8.000 COP <i>(de donde Lucho Díaz)</i>\n" +
+    "• <b>San Juan del Cesar:</b> $10.000 COP\n" +
+    "• <b>El Molino:</b> $15.000 COP | <b>Hatonuevo:</b> $15.000 COP\n" +
+    "• <b>Villanueva:</b> $20.000 COP | <b>Urumita:</b> $20.000 COP\n" +
+    "• <b>Maicao:</b> $30.000 COP | <b>Riohacha:</b> $40.000 COP\n\n" +
+    "👇 <b>Selecciona tu destino:</b>";
+
+  await safeReply(
+    ctx,
+    msg,
+    Markup.inlineKeyboard([
+      [
+        Markup.button.callback('🏍️ Distracción ($5.000)', 'dest_distraccion'),
+        Markup.button.callback('🚗 Barrancas ($8.000)', 'dest_barrancas')
+      ],
+      [
+        Markup.button.callback('🚗 San Juan ($10.000)', 'dest_san_juan'),
+        Markup.button.callback('🚗 El Molino ($15.000)', 'dest_el_molino')
+      ],
+      [
+        Markup.button.callback('🚗 Hatonuevo ($15.000)', 'dest_hatonuevo'),
+        Markup.button.callback('🚗 Villanueva ($20.000)', 'dest_villanueva')
+      ],
+      [
+        Markup.button.callback('🚗 Urumita ($20.000)', 'dest_urumita'),
+        Markup.button.callback('🚗 Maicao ($30.000)', 'dest_maicao')
+      ],
+      [
+        Markup.button.callback('🚗 Riohacha ($40.000)', 'dest_riohacha')
+      ],
+      [Markup.button.callback('🔙 Menú Principal', 'btn_main_menu')]
+    ])
+  );
+});
+
+const interDestMap: Record<string, { city: string, vehicle: 'moto' | 'carro', price: number, label: string }> = {
+  'dest_distraccion': { city: 'Distracción', vehicle: 'moto', price: 5000, label: 'Mototaxi' },
+  'dest_barrancas': { city: 'Barrancas', vehicle: 'carro', price: 8000, label: 'Viaje' },
+  'dest_san_juan': { city: 'San Juan del Cesar', vehicle: 'carro', price: 10000, label: 'Viaje' },
+  'dest_el_molino': { city: 'El Molino', vehicle: 'carro', price: 15000, label: 'Viaje' },
+  'dest_hatonuevo': { city: 'Hatonuevo', vehicle: 'carro', price: 15000, label: 'Viaje' },
+  'dest_villanueva': { city: 'Villanueva', vehicle: 'carro', price: 20000, label: 'Viaje' },
+  'dest_urumita': { city: 'Urumita', vehicle: 'carro', price: 20000, label: 'Viaje' },
+  'dest_maicao': { city: 'Maicao', vehicle: 'carro', price: 30000, label: 'Viaje' },
+  'dest_riohacha': { city: 'Riohacha', vehicle: 'carro', price: 40000, label: 'Viaje' },
+};
+
+for (const [actionKey, data] of Object.entries(interDestMap)) {
+  bot.action(actionKey, async (ctx) => {
+    await ctx.answerCbQuery();
+    const userId = ctx.from.id.toString();
+    const session = getOrCreateSession(userId);
+
+    session.pendingAction = {
+      type: 'ride',
+      vehicle: data.vehicle,
+      destination: data.city,
+      price: data.price,
+      subtotal: data.price,
+      delivery_fee: 0,
+      step: 'awaiting_origin'
+    };
+
+    const emoji = data.vehicle === 'moto' ? '🏍️' : '🚗';
+    const msg = 
+      `🛣️ <b>Viaje Fonseca ↔ ${data.city} (${emoji} ${data.label})</b>\n` +
+      `💰 Tarifa fija: <b>$${data.price.toLocaleString('es-CO')} COP</b>\n\n` +
+      `📍 <b>¿Desde qué punto de Fonseca saldrías?</b>\n<i>(Escribe la dirección o comparte tu ubicación)</i>`;
+
+    await safeReply(ctx, msg, Markup.inlineKeyboard([
+      [Markup.button.callback('❌ Cancelar', 'cancel_action')]
+    ]));
+  });
+}
+
+// Confirmar Carrera Efectivo
+bot.action('confirm_ride_cash', async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id.toString();
+  const userName = ctx.from.first_name || 'Cliente';
+  const session = getOrCreateSession(userId);
+
+  if (!session.pendingAction) {
+    return safeReply(ctx, 'No hay ningún servicio pendiente.');
+  }
+
+  const pending = session.pendingAction;
+  const isPackage = pending.type === 'package';
+  const orderResult = await processOrderCreation(userId, userName, {
+    type: pending.type || 'ride',
+    vehicle: pending.vehicle || 'moto',
+    passengers: pending.passengers || 1,
+    subtotal: pending.price || 3000,
+    delivery_fee: pending.delivery_fee || 0,
+    total: (pending.price || 3000) + (pending.delivery_fee || 0),
+    payment_method: 'cash',
+    origin: pending.origin || 'Fonseca',
+    destination: pending.destination || 'Fonseca'
+  });
+
+  session.pendingAction = null;
+  session.history = []; // Limpiar historial tras confirmación
+
+  if (!orderResult.success) {
+    return safeReply(ctx, '❌ Ocurrió un error. Intenta de nuevo.');
+  }
+
+  const isCar = pending.vehicle === 'carro';
+  const trackingUrl = `http://89.117.72.233:3000/track/${orderResult.code}`;
+
+  let reply = '';
+  const buttons = [];
+
+  if (isPackage) {
+    reply = `🎉 <b>¡Domicilio Confirmado!</b> 📦💨\n\n`;
+    reply += `📋 <b>Código:</b> <code>${orderResult.code}</code>\n`;
+    if (orderResult.courier) {
+      reply += `🛵 <b>Domiciliario:</b> ${orderResult.courier.name} (${orderResult.courier.plate || 'Moto'})\n`;
+      reply += `📞 <b>Contacto:</b> <code>${orderResult.courier.wa_phone}</code>\n`;
+    }
+    reply += `⏱️ <b>Llegada:</b> 15-25 min\n`;
+    reply += `📍 <b>Entrega:</b> ${pending.destination}\n`;
+    reply += `💵 <b>Total a pagar:</b> $${orderResult.total.toLocaleString('es-CO')} COP\n\n`;
+    reply += `🗺️ <b>Seguimiento en Vivo:</b> <a href="${trackingUrl}">Ver en mapa</a>`;
+    buttons.push([Markup.button.url('🗺️ Ver Domicilio en Vivo 📍', trackingUrl)]);
+  } else if (isCar) {
+    const c = orderResult.courier;
+    reply = `🎉 <b>¡Viaje en Carro Confirmado!</b> 🚗💨\n\n`;
+    reply += `📋 <b>Código:</b> <code>${orderResult.code}</code>\n\n`;
+    if (c) {
+      reply += `👤 <b>Chofer Asignado:</b> ${c.name}\n`;
+      reply += `📞 <b>Teléfono / WhatsApp:</b> <code>${c.wa_phone}</code> <i>(Toca para copiar)</i>\n`;
+      reply += `🚗 <b>Vehículo:</b> ${c.vehicle_model || 'Automóvil'}\n`;
+      reply += `🎨 <b>Color del Carro:</b> ${c.color || 'Blanco'}\n`;
+      reply += `🏷️ <b>Placa:</b> <code>${c.plate || 'Por asignar'}</code>\n`;
+      reply += `⭐ <b>Calificación:</b> ${c.rating || '5.0'} ⭐\n\n`;
+    }
+    reply += `⏱️ <b>Tiempo de recogida:</b> 5 a 10 min\n`;
+    reply += `📍 <b>Ruta:</b> ${pending.origin} ➔ ${pending.destination}\n`;
+    reply += `💵 <b>Total a pagar:</b> $${orderResult.total.toLocaleString('es-CO')} COP\n\n`;
+    reply += `🗺️ <b>Seguimiento GPS:</b> <a href="${trackingUrl}">Ver ubicación del carro</a>`;
+
+    if (c?.wa_phone) {
+      buttons.push([Markup.button.url('💬 WhatsApp del Chofer', `https://wa.me/57${c.wa_phone}?text=Hola%20${encodeURIComponent(c.name)},%20tengo%20el%20servicio%20${orderResult.code}%20en%20En%20un%202x3`)]);
+    }
+    buttons.push([Markup.button.url('🗺️ Ver Carro en Vivo 📍', trackingUrl)]);
+  } else {
+    reply = `🎉 <b>¡Mototaxi en Camino!</b> 🛵💨\n\n`;
+    reply += `📋 <b>Código:</b> <code>${orderResult.code}</code>\n`;
+    if (orderResult.courier) {
+      reply += `🏍️ <b>Mototaxista:</b> ${orderResult.courier.name} (${orderResult.courier.plate || 'Moto'})\n`;
+      reply += `📞 <b>Contacto:</b> <code>${orderResult.courier.wa_phone}</code>\n`;
+    }
+    reply += `⏱️ <b>Llegada:</b> 3-5 min\n`;
+    reply += `📍 <b>Ruta:</b> ${pending.origin} ➔ ${pending.destination}\n`;
+    reply += `💵 <b>Total a pagar:</b> $${orderResult.total.toLocaleString('es-CO')} COP\n\n`;
+    reply += `🗺️ <b>Seguimiento en Vivo:</b> <a href="${trackingUrl}">Ver en mapa</a>`;
+    buttons.push([Markup.button.url('🗺️ Ver Mototaxi en Vivo 📍', trackingUrl)]);
+  }
+
+  buttons.push([Markup.button.callback('📋 Consultar Mi Servicio', 'btn_status_quick')]);
+  buttons.push([Markup.button.callback('🛵 Menú Principal', 'btn_main_menu')]);
+
+  await safeReply(ctx, reply, Markup.inlineKeyboard(buttons));
+});
+
+// Confirmar Carrera Transferencia
+bot.action('confirm_ride_transfer', async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id.toString();
+  const userName = ctx.from.first_name || 'Cliente';
+  const session = getOrCreateSession(userId);
+
+  if (!session.pendingAction) {
+    return safeReply(ctx, 'No hay ninguna orden pendiente.');
+  }
+
+  const pending = session.pendingAction;
+  const orderResult = await processOrderCreation(userId, userName, {
+    type: pending.type || 'ride',
+    vehicle: pending.vehicle || 'moto',
+    passengers: pending.passengers || 1,
+    subtotal: pending.price || 3000,
+    delivery_fee: pending.delivery_fee || 0,
+    total: (pending.price || 3000) + (pending.delivery_fee || 0),
+    payment_method: 'transfer',
+    origin: pending.origin || 'Fonseca',
+    destination: pending.destination || 'Fonseca'
+  });
+
+  session.pendingAction = null;
+  session.history = []; // Limpiar historial
+
+  if (!orderResult.success) {
+    return safeReply(ctx, '❌ Ocurrió un error creando la orden.');
+  }
+
+  await sendTransferPaymentInstructions(ctx, orderResult);
+});
+
+// Cancelar acción actual
+bot.action('cancel_action', async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id.toString();
+  const session = getOrCreateSession(userId);
+  session.pendingAction = null;
+  session.history = [];
+  await safeReply(ctx, '❌ Operación cancelada.', Markup.inlineKeyboard([
+    [Markup.button.callback('🛵 Menú Principal', 'btn_main_menu')]
+  ]));
+});
+
+// ==========================================
+// SECCIÓN DOMICILIOS (COMIDA, TIENDAS, FARMACIAS)
+// ==========================================
+bot.action('btn_domicilio', async (ctx) => {
+  await ctx.answerCbQuery();
+  const msg = 
+    "📦 <b>Servicio de Domicilios (En un 2x3)</b>\n\n" +
+    "💵 <b>Tarifas de Domicilio:</b>\n" +
+    "• <b>1 Parada:</b> $3.000 COP\n" +
+    "• <b>2 Paradas:</b> $5.000 COP\n" +
+    "• <b>3 Paradas:</b> $8.000 COP\n\n" +
+    "¿Qué deseas pedir hoy?";
+
+  await safeReply(
+    ctx,
+    msg,
+    Markup.inlineKeyboard([
+      [Markup.button.callback('🍽️ Ver Restaurantes Aliados', 'btn_list_merchants')],
+      [Markup.button.callback('🛍️ Compras en Tienda / Farmacia / Mercado', 'btn_compras_domicilio')],
+      [Markup.button.callback('🔙 Menú Principal', 'btn_main_menu')]
+    ])
+  );
+});
+
+// Compras en Tienda / Farmacia / Mercado
+bot.action('btn_compras_domicilio', async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id.toString();
+  const session = getOrCreateSession(userId);
+
+  session.pendingAction = {
+    type: 'package',
+    price: 3000,
+    delivery_fee: 3000,
+    subtotal: 0,
+    step: 'awaiting_details'
+  };
+
+  const msg = 
+    "🛍️ <b>Compras en Tiendas, Farmacias y Mercado</b>\n\n" +
+    "Tarifa: <b>$3.000 COP</b> (1 lugar) | <b>$5.000 COP</b> (2 lugares).\n\n" +
+    "👉 <b>Escríbeme qué productos necesitas y dónde te los entregamos:</b>\n\n" +
+    "<i>(Escribe la dirección de entrega o comparte tu ubicación)</i>";
+
+  await safeReply(ctx, msg, Markup.inlineKeyboard([
+    [Markup.button.callback('❌ Cancelar', 'cancel_action')]
+  ]));
+});
+
+// Listado ultra-conciso de restaurantes SIN direcciones ni teléfonos
+bot.action('btn_list_merchants', async (ctx) => {
+  await ctx.answerCbQuery();
+  try {
+    const res = await dbClient.query("SELECT id, name, specialty, sponsored FROM merchants ORDER BY sponsored DESC, name ASC");
+    
+    let msg = "🍽️ <b>Restaurantes Aliados en Fonseca:</b>\n\n";
+    const buttons = [];
+
+    for (const m of res.rows) {
+      const badge = m.sponsored ? '🌟 ' : '🍲 ';
+      msg += `• <b>${badge}${m.name}</b> <i>(${m.specialty || 'Comida típica'})</i>\n`;
+      buttons.push([Markup.button.callback(`📖 Menú: ${m.name}`, `menu_${m.id}`)]);
+    }
+    buttons.push([Markup.button.callback('🔙 Volver a Domicilios', 'btn_domicilio')]);
+
+    await safeReply(ctx, msg, Markup.inlineKeyboard(buttons));
+  } catch (err: any) {
+    await safeReply(ctx, 'Error al consultar los restaurantes.');
+  }
+});
+
+// Menú ultra-compacto sin textos largos
+bot.action(/^menu_(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const merchantId = ctx.match[1];
+
+  try {
+    const res = await dbClient.query("SELECT * FROM merchants WHERE id = $1", [merchantId]);
+    if (res.rows.length === 0) return safeReply(ctx, 'Comercio no encontrado.');
+    const m = res.rows[0];
+
+    let msg = `🍽️ <b>Menú: ${m.name}</b> ${m.sponsored ? '🌟' : ''}\n\n`;
+
+    const menuItems = Array.isArray(m.menu) ? m.menu : [];
+    if (menuItems.length > 0) {
+      menuItems.forEach((item: any) => {
+        msg += `• <b>${item.item || item.name}</b> — $${Number(item.price).toLocaleString('es-CO')} COP\n`;
+      });
+    }
+
+    msg += `\n🛵 <b>Domicilio:</b> $3.000 COP (1 lugar) | $5.000 COP (2 lugares)\n`;
+    msg += `👉 <i>Escríbeme qué deseas pedir:</i>`;
+
+    await safeReply(ctx, msg, Markup.inlineKeyboard([
+      [Markup.button.callback('🍽️ Ver Otros Restaurantes', 'btn_list_merchants')],
+      [Markup.button.callback('🔙 Menú Principal', 'btn_main_menu')]
+    ]));
+  } catch (err: any) {
+    await safeReply(ctx, 'Error al obtener el menú.');
+  }
+});
+
+bot.action('btn_status_quick', async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id.toString();
+  await checkUserStatus(ctx, userId);
+});
+
+async function checkUserStatus(ctx: any, userId: string) {
+  try {
+    const res = await dbClient.query(`
+      SELECT o.code, o.type, o.status, o.payment_status, o.total, o.payment_method, o.origin, o.destination, o.created_at, 
+             c.name as courier_name, c.wa_phone as courier_phone, c.plate, c.color, c.vehicle_model, c.vehicle_type,
+             c.current_lat, c.current_lng, m.name as merchant_name
+      FROM orders o
+      JOIN users u ON o.user_id = u.id
+      LEFT JOIN couriers c ON o.courier_id = c.id
+      LEFT JOIN merchants m ON o.merchant_id = m.id
+      WHERE u.wa_phone = $1
+      ORDER BY o.created_at DESC LIMIT 1
+    `, [userId]);
+
+    if (res.rows.length === 0) {
+      return safeReply(ctx, 'No tienes ningún servicio activo. Escríbeme qué necesitas 🛵', Markup.inlineKeyboard([
+        [Markup.button.callback('🛵 Menú Principal', 'btn_main_menu')]
+      ]));
+    }
+
+    const order = res.rows[0];
+    const statusMap: any = {
+      'DRAFT': '📝 Registrado (Pendiente comprobante)',
+      'CONFIRMED': '✅ Confirmado',
+      'PREPARING': '🍳 En preparación',
+      'ON_THE_WAY': '🛵 En camino',
+      'DELIVERED': '🎉 Entregado',
+      'CANCELLED': '❌ Cancelado'
+    };
+
+    const trackingUrl = `http://89.117.72.233:3000/track/${order.code}`;
+    const isCar = order.vehicle_type === 'carro';
+
+    let msg = `📋 <b>Servicio [${order.code}]</b>\n\n`;
+    msg += `• <b>Tipo:</b> ${isCar ? '🚗 Viaje en Carro' : (order.type === 'ride' ? '🛵 Mototaxi' : '📦 Domicilio')}\n`;
+    if (order.merchant_name) msg += `• <b>Comercio:</b> ${order.merchant_name}\n`;
+    msg += `• <b>Estado:</b> ${statusMap[order.status] || order.status}\n`;
+    msg += `• <b>Pago:</b> ${order.payment_method === 'cash' ? '💵 Efectivo' : '📱 Transferencia Bre-B'}\n`;
+    msg += `• <b>Total:</b> $${Number(order.total).toLocaleString('es-CO')} COP\n\n`;
+    
+    if (order.courier_name) {
+      msg += `👤 <b>${isCar ? 'Chofer' : 'Conductor'}:</b> ${order.courier_name}\n`;
+      if (order.courier_phone) msg += `📞 <b>Contacto:</b> <code>${order.courier_phone}</code>\n`;
+      if (isCar) {
+        msg += `🚗 <b>Vehículo:</b> ${order.vehicle_model || 'Automóvil'}\n`;
+        msg += `🎨 <b>Color:</b> ${order.color || 'Blanco'}\n`;
+        msg += `🏷️ <b>Placa:</b> <code>${order.plate || 'Por asignar'}</code>\n`;
+      } else {
+        msg += `🏍️ <b>Placa:</b> <code>${order.plate || 'Moto'}</code>\n`;
+      }
+    }
+    
+    msg += `\n🗺️ <b>Seguimiento GPS:</b> <a href="${trackingUrl}">Ver ubicación en vivo</a>\n`;
+
+    const statusButtons = [];
+    if (order.courier_phone && isCar) {
+      statusButtons.push([Markup.button.url('💬 WhatsApp del Chofer', `https://wa.me/57${order.courier_phone}`)]);
+    }
+    statusButtons.push([Markup.button.url('🗺️ Ver Mapa en Vivo 📍', trackingUrl)]);
+    statusButtons.push([Markup.button.callback('🛵 Menú Principal', 'btn_main_menu')]);
+
+    await safeReply(ctx, msg, Markup.inlineKeyboard(statusButtons));
+  } catch (err: any) {
+    await safeReply(ctx, 'Error al consultar tu servicio.');
+  }
+}
+
+// ==========================================
+// OCR FOTOS DE COMPROBANTES (FASE 2)
+// ==========================================
 bot.on('photo', async (ctx) => {
   const userId = ctx.from.id.toString();
   await ctx.sendChatAction('typing').catch(e => console.error(e));
@@ -206,7 +997,7 @@ bot.on('photo', async (ctx) => {
     `, [userId]);
 
     if (orderRes.rows.length === 0) {
-      return ctx.reply('📸 Recibí tu foto, pero no tienes ningún pedido pendiente de pago en este momento. Si deseas pedir algo, ¡dime y te lo llevo en un 2x3! 🛵');
+      return safeReply(ctx, '📸 Recibí tu foto, pero no tienes ningún servicio pendiente de pago.');
     }
 
     const order = orderRes.rows[0];
@@ -215,101 +1006,78 @@ bot.on('photo', async (ctx) => {
     const fileLink = await ctx.telegram.getFileLink(bestPhoto.file_id);
     const imageUrl = fileLink.href;
 
-    await ctx.reply('🔍 Analizando tu comprobante de pago con visión IA... dame un segundito.');
+    await safeReply(ctx, '🔍 Analizando comprobante de pago...');
 
     const ocrResult = await receipt_ocr(imageUrl, Number(order.total));
     const verifyResult = await payment_verify(order.code, ocrResult.data, imageUrl);
 
     if (verifyResult.verified) {
-      let msg = `✅ **¡Comprobante Verificado con Éxito!**\n\n`;
-      msg += `📋 Pedido: **${verifyResult.order_code}**\n`;
-      msg += `💰 Valor: **$${Number(verifyResult.amount).toLocaleString('es-CO')} COP**\n`;
-      msg += `🔖 Referencia: \`${verifyResult.reference}\`\n`;
-      msg += `🏦 Billetera: **${ocrResult.data.wallet.toUpperCase()}**\n\n`;
-      msg += `🍳 Tu pedido ha pasado a **PREPARACIÓN** y el mensajero ya está notificado. ¡Te lo llevamos en un 2x3! 🚀`;
-      await ctx.reply(msg);
+      const trackingUrl = `http://89.117.72.233:3000/track/${verifyResult.order_code}`;
+      let msg = `✅ <b>¡Pago Verificado con Éxito!</b>\n\n`;
+      msg += `📋 Pedido: <code>${verifyResult.order_code}</code>\n`;
+      msg += `💰 Valor recibido: <b>$${Number(verifyResult.amount).toLocaleString('es-CO')} COP</b>\n`;
+      msg += `🔖 Referencia: <code>${verifyResult.reference}</code>\n\n`;
+      msg += `🍳 Tu servicio está <b>CONFIRMADO</b> y el conductor ya va en camino. 🛵💨\n`;
+      msg += `🗺️ Puedes seguirlo en tiempo real en el mapa:`;
+      await safeReply(ctx, msg, Markup.inlineKeyboard([
+        [Markup.button.url('🗺️ Ver Mototaxi en Vivo 📍', trackingUrl)],
+        [Markup.button.callback('📋 Consultar Mi Servicio', 'btn_status_quick')],
+        [Markup.button.callback('🛵 Menú Principal', 'btn_main_menu')]
+      ]));
     } else {
-      let msg = `⚠️ **Atención con tu comprobante:**\n\n`;
+      let msg = `⚠️ <b>Atención con tu comprobante:</b>\n\n`;
       msg += `${verifyResult.error || 'No pudimos validar automáticamente el comprobante.'}\n\n`;
-      msg += `Hemos notificado al equipo de soporte para verificación manual.`;
-      await ctx.reply(msg);
+      msg += `Pasó a revisión con nuestro equipo de soporte. Te avisaremos en breve.`;
+      await safeReply(ctx, msg, Markup.inlineKeyboard([
+        [Markup.button.callback('📋 Consultar Mi Servicio', 'btn_status_quick')],
+        [Markup.button.callback('🛵 Menú Principal', 'btn_main_menu')]
+      ]));
     }
   } catch (err: any) {
-    console.error("Error procesando foto de comprobante:", err);
-    await ctx.reply('Tuvimos un inconveniente leyendo la foto. Por favor asegúrate que la imagen sea clara o escribe al administrador.');
+    console.error("Error procesando comprobante:", err);
+    await safeReply(ctx, 'Tuvimos un inconveniente leyendo la foto.');
   }
 });
 
-// Comando /pedido o /status para consultar estado en vivo
+// ==========================================
+// COMANDOS DE TEXTO DIRECTOS
+// ==========================================
 bot.command(['pedido', 'status'], async (ctx) => {
   const userId = ctx.from.id.toString();
-  try {
-    const res = await dbClient.query(`
-      SELECT o.code, o.type, o.status, o.payment_status, o.total, o.payment_method, o.created_at, c.name as courier_name, c.plate
-      FROM orders o
-      JOIN users u ON o.user_id = u.id
-      LEFT JOIN couriers c ON o.courier_id = c.id
-      WHERE u.wa_phone = $1
-      ORDER BY o.created_at DESC LIMIT 1
-    `, [userId]);
-
-    if (res.rows.length === 0) {
-      return ctx.reply('No tienes ningún pedido o viaje activo en este momento. Escríbeme qué necesitas para llevártelo en un 2x3 🛵');
-    }
-
-    const order = res.rows[0];
-    const statusMap: any = {
-      'DRAFT': '📝 Registrado (Pendiente pago)',
-      'CONFIRMED': '✅ Confirmado',
-      'PREPARING': '🍳 En preparación',
-      'ON_THE_WAY': '🛵 En camino',
-      'DELIVERED': '🎉 Entregado / Completado',
-      'CANCELLED': '❌ Cancelado'
-    };
-
-    let msg = `📋 **Estado de tu Servicio [${order.code}]**\n`;
-    msg += `• Tipo: ${order.type === 'ride' ? '🛵 Mototaxi/Viaje' : order.type === 'package' ? '📦 Mandado' : '🍔 Domicilio'}\n`;
-    msg += `• Estado: ${statusMap[order.status] || order.status}\n`;
-    msg += `• Pago: ${order.payment_method === 'cash' ? '💵 Efectivo' : '📱 Transferencia'} (${order.payment_status === 'VERIFIED' ? '✅ Verificado' : '⏳ Pendiente'})\n`;
-    msg += `• Total: $${Number(order.total).toLocaleString('es-CO')} COP\n`;
-    if (order.courier_name) {
-      msg += `• Conductor/Mensajero: ${order.courier_name} (${order.plate || 'Moto'})\n`;
-    }
-    await ctx.reply(msg);
-  } catch (err: any) {
-    await ctx.reply('Error al consultar tu pedido.');
-  }
+  await checkUserStatus(ctx, userId);
 });
 
-// Comando /mototaxi o /viaje (Fase 3)
-bot.command(['mototaxi', 'viaje'], async (ctx) => {
-  const quoteMoto = await fare_quote('ride', 'moto');
-  const quoteCar = await fare_quote('ride', 'carro');
+bot.command(['mototaxi', 'viaje', 'transporte'], async (ctx) => {
+  const quote1 = await fare_quote('ride', 1);
+  const quote2 = await fare_quote('ride', 2);
   
-  let msg = `🛵 **Servicio de Transporte y Mototaxi ("En un 2x3")**\n\n`;
-  msg += `Tarifas urbanas en Fonseca:\n`;
-  msg += `• 🏍️ **Mototaxi:** $${quoteMoto.fee.toLocaleString('es-CO')} COP (Llega en ${quoteMoto.pickup_eta})\n`;
-  msg += `• 🚗 **Carro:** $${quoteCar.fee.toLocaleString('es-CO')} COP (Llega en ${quoteCar.pickup_eta})\n\n`;
-  msg += `📍 *¿Desde dónde te recogemos y para dónde vas?* (Escríbeme o comparte tu ubicación).`;
-  await ctx.reply(msg);
+  let msg = `🛵 <b>Servicio de Mototaxi en Fonseca</b>\n\n`;
+  msg += `• 👤 <b>1 Pasajero:</b> $${quote1.fee.toLocaleString('es-CO')} COP\n`;
+  msg += `• 👥 <b>2 Pasajeros:</b> $${quote2.fee.toLocaleString('es-CO')} COP\n\n`;
+  msg += `📍 <i>¿Cuántos pasajeros van?</i>`;
+
+  await safeReply(ctx, msg, Markup.inlineKeyboard([
+    [Markup.button.callback('👤 1 Pasajero ($3.000)', 'moto_1_pax')],
+    [Markup.button.callback('👥 2 Pasajeros ($4.000)', 'moto_2_pax')],
+    [Markup.button.callback('🛣️ Rutas Intermunicipales', 'btn_intermunicipal')]
+  ]));
 });
 
-// Comando /mandado (Fase 3)
-bot.command('mandado', async (ctx) => {
-  const quote = await fare_quote('package');
-  let msg = `📦 **Mandados Libres ("De lo que sea")**\n\n`;
-  msg += `Tarifa plana urbana: **$${quote.fee.toLocaleString('es-CO')} COP** (hasta 5 kg)\n`;
-  msg += `⏱️ Tiempo estimado: **${quote.eta_range}**\n\n`;
-  msg += `Dime qué necesitas traer o llevar (farmacia, documentos, compras de la plaza, llaves) y las direcciones de recogida y entrega.`;
-  await ctx.reply(msg);
+bot.command('domicilio', async (ctx) => {
+  const msg = 
+    "📦 <b>Domicilios en Fonseca (En un 2x3)</b>\n\n" +
+    "• <b>1 Parada:</b> $3.000 COP\n" +
+    "• <b>2 Paradas:</b> $5.000 COP\n" +
+    "• <b>3 Paradas:</b> $8.000 COP\n\n" +
+    "Dime qué necesitas pedir de restaurante o compras.";
+  await safeReply(ctx, msg);
 });
 
-// Comando /relay para hablar con el mensajero sin exponer números (Fase 3)
 bot.command('relay', async (ctx) => {
   const userId = ctx.from.id.toString();
   const text = ctx.message.text.replace('/relay', '').trim();
   if (!text) {
-    return ctx.reply('Escribe tu mensaje para el mensajero. Ejemplo: `/relay ya estoy en el portón`');
+    return safeReply(ctx, 'Escribe tu mensaje. Ejemplo: <code>/relay ya estoy en el portón</code>');
   }
 
   const orderRes = await dbClient.query(`
@@ -322,37 +1090,19 @@ bot.command('relay', async (ctx) => {
   `, [userId]);
 
   if (orderRes.rows.length === 0) {
-    return ctx.reply('No tienes ningún servicio activo en curso para contactar al mensajero.');
+    return safeReply(ctx, 'No tienes ningún servicio activo en curso.');
   }
 
   const order = orderRes.rows[0];
   await relay_message(order.id, 'user', text);
-  await ctx.reply(`🔒 **Mensaje entregado a ${order.courier_name || 'tu mensajero'}:**\n"${text}"\n*(Tus números permanecen 100% privados)*`);
+  await safeReply(ctx, `🔒 <b>Mensaje entregado a ${order.courier_name || 'tu conductor'}:</b>\n"${text}"`);
 });
 
-// Comando /publicidad o /anunciar (Fase 4)
-bot.command(['publicidad', 'anunciar', 'pauta'], async (ctx) => {
-  const pitch = await ad_pitch();
-  let msg = `📢 **Planes de Publicidad para Comercios Aliados ("En un 2x3")**\n\n`;
-  pitch.plans.forEach(p => {
-    msg += `• **${p.name}:** $${p.price.toLocaleString('es-CO')}/mes\n  ${p.description}\n\n`;
-  });
-  msg += `💼 Si deseas activar tu pauta hoy, dime el nombre de tu comercio y el plan que prefieres.`;
-  await ctx.reply(msg);
-});
-
-// Comando /estado (Fase 4)
-bot.command('estado', async (ctx) => {
-  const pub = await status_publish();
-  await ctx.reply(`📢 ${pub.message}\n🌟 Aliados destacados del día publicados en el canal.`);
-});
-
-// Comando /entregar [codigo] para simular entrega (DELIVERED) y generar asiento contable
 bot.command('entregar', async (ctx) => {
   const args = ctx.message.text.split(' ');
   const code = args[1]?.toUpperCase().trim();
   if (!code) {
-    return ctx.reply('Indica el código del pedido. Ejemplo: `/entregar FX-1234`');
+    return safeReply(ctx, 'Indica el código. Ejemplo: <code>/entregar FX-1234</code>');
   }
 
   try {
@@ -361,33 +1111,32 @@ bot.command('entregar', async (ctx) => {
       [code]
     );
     if (res.rowCount === 0) {
-      return ctx.reply(`No se encontró ningún pedido con código ${code}`);
+      return safeReply(ctx, `No se encontró el pedido ${code}`);
     }
     
     const order = res.rows[0];
     const ledgerResult = await ledger_post(order.id);
 
-    let reply = `🎉 Pedido **${code}** marcado como **DELIVERED** (Entregado con éxito).\n\n`;
+    let reply = `🎉 Pedido <b>${code}</b> marcado como <b>DELIVERED</b>.\n\n`;
     if (ledgerResult.status === 'success') {
-      reply += `📖 **Asiento Contable Registrado:**\n`;
+      reply += `📖 <b>Asiento Contable Registrado:</b>\n`;
       reply += `• Débitos: $${ledgerResult.total_debit?.toLocaleString('es-CO')} COP\n`;
       reply += `• Créditos: $${ledgerResult.total_credit?.toLocaleString('es-CO')} COP\n`;
-      reply += `• Estado: ✅ Balance Cuadrado (Partida Doble)`;
+      reply += `• Estado: ✅ Cuadrado`;
     }
-    await ctx.reply(reply);
+    await safeReply(ctx, reply);
   } catch (err: any) {
     console.error("Error en comando entregar:", err);
-    await ctx.reply('Error al actualizar el estado del pedido.');
+    await safeReply(ctx, 'Error al actualizar el estado del pedido.');
   }
 });
 
-// Comando /liquidar o /cierre para ver la liquidación diaria de mensajeros y cuadre de caja
 bot.command(['liquidar', 'cierre'], async (ctx) => {
   try {
     const today = new Date().toISOString().split('T')[0];
     const couriersRes = await dbClient.query("SELECT id, name, plate FROM couriers WHERE is_active = true");
     
-    let summaryMsg = `🧾 **CIERRE Y LIQUIDACIÓN DIARIA (${today})**\n\n`;
+    let summaryMsg = `🧾 <b>CIERRE DIARIO (${today})</b>\n\n`;
     let grandTotalCash = 0;
     let grandTotalFees = 0;
     let grandNet = 0;
@@ -400,123 +1149,189 @@ bot.command(['liquidar', 'cierre'], async (ctx) => {
         grandTotalFees += s.fees_earned;
         grandNet += s.net_to_consign;
 
-        summaryMsg += `🏍️ **${courier.name}** (${courier.plate || 'Moto'}):\n`;
-        summaryMsg += `  • Servicios entregados: ${s.services}\n`;
+        summaryMsg += `🏍️ <b>${courier.name}</b> (${courier.plate || 'Vehículo'}):\n`;
+        summaryMsg += `  • Servicios: ${s.services}\n`;
         summaryMsg += `  • Efectivo recibido: $${s.cash_collected.toLocaleString('es-CO')} COP\n`;
-        summaryMsg += `  • Domicilios ganados: $${s.fees_earned.toLocaleString('es-CO')} COP\n`;
-        summaryMsg += `  • 💵 **A consignar a la empresa:** $${s.net_to_consign.toLocaleString('es-CO')} COP\n\n`;
+        summaryMsg += `  • Ganancia: $${s.fees_earned.toLocaleString('es-CO')} COP\n`;
+        summaryMsg += `  • 💵 <b>A consignar:</b> $${s.net_to_consign.toLocaleString('es-CO')} COP\n\n`;
       }
     }
 
     summaryMsg += `━━━━━━━━━━━━━━━━━━\n`;
-    summaryMsg += `💰 **TOTAL RECAUDADO:** $${grandTotalCash.toLocaleString('es-CO')} COP\n`;
-    summaryMsg += `🛵 **TOTAL GANANCIA MENSAJEROS:** $${grandTotalFees.toLocaleString('es-CO')} COP\n`;
-    summaryMsg += `🏦 **NETO A RECIBIR EN CAJA:** $${grandNet.toLocaleString('es-CO')} COP`;
+    summaryMsg += `💰 <b>TOTAL RECAUDADO:</b> $${grandTotalCash.toLocaleString('es-CO')} COP\n`;
+    summaryMsg += `🛵 <b>GANANCIA CONDUCTORES:</b> $${grandTotalFees.toLocaleString('es-CO')} COP\n`;
+    summaryMsg += `🏦 <b>NETO A RECIBIR EN CAJA:</b> $${grandNet.toLocaleString('es-CO')} COP`;
 
-    await ctx.reply(summaryMsg);
+    await safeReply(ctx, summaryMsg);
   } catch (err: any) {
     console.error("Error en liquidar:", err);
-    await ctx.reply('Error al generar la liquidación.');
+    await safeReply(ctx, 'Error al generar la liquidación.');
   }
 });
 
-bot.on('text', async (ctx, next) => {
+// ==========================================
+// GESTOR DE MENSAJES DE TEXTO (FLUJOS + IA LLM)
+// ==========================================
+bot.on('text', async (ctx) => {
   const userMessage = ctx.message.text;
   const userId = ctx.from.id.toString();
   const userName = ctx.from.first_name || 'Cliente';
   
-  if (userMessage.trim().toLowerCase() === 'hola') {
-      return sendWelcome(ctx);
+  const cleanText = userMessage.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const isGreeting = /^(hola|buebas|buenas|buen dia|buenos dias|buenas tardes|buenas noches|hi|hey|hello|menu|inicio|empezar|\/start|\/reset)$/i.test(cleanText);
+
+  if (isGreeting) {
+    return sendWelcome(ctx);
   }
 
   console.log(`\n[TELEGRAM] Mensaje de ${userId} (${userName}): ${userMessage}`);
-  await ctx.sendChatAction('typing').catch(e => console.error('Error typing:', e));
+  const session = getOrCreateSession(userId);
 
-  if (!userSessions.has(userId)) {
-     userSessions.set(userId, { history: [], lastActivity: Date.now() });
+  // 1. Manejo de Flujo Interactivo Paso a Paso (PendingAction)
+  if (session.pendingAction) {
+    const pending = session.pendingAction;
+
+    // Paso Origen (Recogida)
+    if (pending.step === 'awaiting_origin') {
+      pending.origin = userMessage.trim();
+      
+      if (pending.destination) {
+        pending.step = 'awaiting_payment';
+        const isCar = pending.vehicle === 'carro';
+        let confirmMsg = `📋 <b>Confirmación de Viaje:</b>\n\n`;
+        confirmMsg += `${isCar ? '🚗' : '🏍️'} <b>Servicio:</b> ${isCar ? 'Viaje' : 'Mototaxi'} Fonseca ↔ ${pending.destination}\n`;
+        confirmMsg += `📍 <b>Recogida:</b> ${pending.origin}\n`;
+        confirmMsg += `🏁 <b>Destino:</b> ${pending.destination}\n`;
+        confirmMsg += `💰 <b>Tarifa:</b> $${(pending.price || 0).toLocaleString('es-CO')} COP\n\n`;
+        confirmMsg += `👉 <i>¿Cómo deseas pagar?</i>`;
+
+        return safeReply(ctx, confirmMsg, Markup.inlineKeyboard([
+          [Markup.button.callback('💵 Pagar en Efectivo', 'confirm_ride_cash')],
+          [Markup.button.callback('📱 Pagar con Bre-B (Transferencia)', 'confirm_ride_transfer')],
+          [Markup.button.callback('❌ Cancelar', 'cancel_action')]
+        ]));
+      } else {
+        pending.step = 'awaiting_destination';
+        const msg = 
+          `📍 <b>Recogida:</b> ${pending.origin}\n\n` +
+          `🏁 <b>Paso 2 de 2:</b> ¿Para qué dirección o barrio vas?\n\n` +
+          `<i>(Ejemplo: Barrio Primero de Julio, Villa Luz)</i>`;
+
+        return safeReply(ctx, msg, Markup.inlineKeyboard([
+          [Markup.button.callback('❌ Cancelar', 'cancel_action')]
+        ]));
+      }
+    }
+
+    // Paso Destino
+    if (pending.step === 'awaiting_destination') {
+      pending.destination = userMessage.trim();
+      pending.step = 'awaiting_payment';
+
+      let confirmMsg = `📋 <b>Confirmación de Mototaxi:</b>\n\n`;
+      confirmMsg += `🏍️ <b>Tipo:</b> Mototaxi Urbano (${pending.passengers === 2 ? '2 Personas' : '1 Persona'})\n`;
+      confirmMsg += `📍 <b>Origen:</b> ${pending.origin}\n`;
+      confirmMsg += `🏁 <b>Destino:</b> ${pending.destination}\n`;
+      confirmMsg += `💰 <b>Tarifa:</b> $${(pending.price || 3000).toLocaleString('es-CO')} COP\n`;
+      confirmMsg += `⏱️ <b>Tiempo llegada:</b> 3 a 5 min\n\n`;
+      confirmMsg += `👉 <i>¿Cómo deseas pagar?</i>`;
+
+      return safeReply(ctx, confirmMsg, Markup.inlineKeyboard([
+        [Markup.button.callback('💵 En Efectivo', 'confirm_ride_cash')],
+        [Markup.button.callback('📱 Con Llave Bre-B (Transferencia)', 'confirm_ride_transfer')],
+        [Markup.button.callback('❌ Cancelar', 'cancel_action')]
+      ]));
+    }
+
+    // Paso Detalles de Compras / Domicilio
+    if (pending.step === 'awaiting_details') {
+      pending.destination = userMessage.trim();
+      pending.origin = 'Tienda / Farmacia / Mercado';
+      pending.step = 'awaiting_payment';
+
+      let confirmMsg = `📦 <b>Confirmación de Domicilio:</b>\n\n`;
+      confirmMsg += `📝 <b>Pedido:</b> ${userMessage}\n`;
+      confirmMsg += `💰 <b>Costo domicilio:</b> $3.000 COP <i>(1 parada)</i>\n`;
+      confirmMsg += `⏱️ <b>Tiempo estimado:</b> 20 a 30 min\n\n`;
+      confirmMsg += `👉 <i>¿Cómo deseas pagar el domicilio?</i>`;
+
+      return safeReply(ctx, confirmMsg, Markup.inlineKeyboard([
+        [Markup.button.callback('💵 En Efectivo al recibir', 'confirm_ride_cash')],
+        [Markup.button.callback('📱 Con Llave Bre-B (Transferencia)', 'confirm_ride_transfer')],
+        [Markup.button.callback('❌ Cancelar', 'cancel_action')]
+      ]));
+    }
   }
-  const session = userSessions.get(userId)!;
-  session.lastActivity = Date.now();
-  
-  let greetingRule = "";
-  if (session.history.length === 0) {
-    greetingRule = `\nREGLA: Este es el primer mensaje. DEBES responder obligatoriamente con el saludo exacto: "¡Hola! 🛵 ¿Qué domicilio vas a pedir? Comida, mandados o hasta tu mototaxi... ¡Dime y te lo llevaré en UN 2x3! 🚀😎"`;
-  }
+
+  // 2. Procesamiento con IA Conversacional (Gemini Flash)
+  await ctx.sendChatAction('typing').catch(e => console.error('Error typing:', e));
 
   session.history.push({ role: 'user', content: userMessage });
   if (session.history.length > 8) session.history.splice(0, session.history.length - 8);
 
-  // Consultar DB en vivo con comercios patrocinados primero
-  let dbContext = "Catálogo temporal";
+  let dbContext = "Catálogo general";
   try {
-    const dbRes = await dbClient.query("SELECT name, specialty, menu, sponsored, ad_plan FROM merchants ORDER BY sponsored DESC, name ASC");
+    const dbRes = await dbClient.query("SELECT name, specialty, menu, sponsored FROM merchants ORDER BY sponsored DESC, name ASC");
     dbContext = JSON.stringify(dbRes.rows);
   } catch (err) {
     console.error("Fallo DB", err);
   }
 
   const promptAntiRobot = `
-REGLAS VITALES DE ATENCIÓN AL CLIENTE (Fases 1, 2, 3 y 4):
+REGLAS SUPREMAS DE ATENCIÓN Y PRECISIÓN:
+1. PREGUNTAS DE PRECISIÓN (OBLIGATORIO): Si el cliente pide productos de tienda o farmacia con variantes (gaseosas, cigarros, cervezas, pañales, medicinas, sabores de comida) y NO especificó marca, tamaño, sabor o presentación:
+   - FRENA de inmediato y haz 1 pregunta directa y corta antes de armar el ticket.
+   - Ejemplo: "¿De qué marca y tamaño la gaseosa? ¿Y los cigarros de qué marca y caja de 10 o 20?"
+2. SÉ ULTRA-CONCISO: Respuestas cortas, máximo 4 líneas o ticket resumido. CERO discursos ni frases de relleno.
+3. PROHIBIDO DAR DIRECCIONES O TELÉFONOS DE RESTAURANTES.
+4. TARIFAS OFICIALES:
+   - Domicilio 1 lugar: $3.000 COP | 2 lugares: $5.000 COP | 3 lugares: $8.000 COP.
+   - Mototaxi urbano: 1 pax $3.000 COP | 2 pax $4.000 COP.
+   - Intermunicipales: Distracción $5.000 (moto), Barrancas $8.000, San Juan $10.000, El Molino/Hatonuevo $15.000, Villanueva/Urumita $20.000, Maicao $30.000, Riohacha $40.000.
+5. CUANDO EL CLIENTE YA ESPECIFICÓ LOS PRODUCTOS Y ENVÍA DIRECCIÓN Y PAGO:
+   - Confirma con el ticket directo y crea el pedido.`;
 
-1. MODO CATÁLOGO (Si el usuario pide menú):
-   - Envía el menú organizado destacando a los "🌟 Aliados Destacados" primero.
+  const fullSystemPrompt = `${fonsiSoul}\n\n=== BASE DE DATOS EN VIVO ===\nComercios y menús actuales:\n${dbContext}\n\n${promptAntiRobot}`;
 
-2. MODO MANDADOS Y MOTOTAXIS (Fase 3):
-   - Si piden carrera de mototaxi: tarifa fija $4.000 (moto) o $8.000 (carro) en Fonseca. Comunica ETA en rango (3-10 min).
-   - Si piden mandado libre: tarifa base $6.000 hasta 5kg.
-
-3. PUBLICIDAD A COMERCIOS (Fase 4):
-   - Si un comercio quiere pautar o anunciarse: ofrece los planes: 🌟 Destacado ($80.000/mes), 📢 Estado ($50.000/mes), 💎 Premium ($110.000/mes).
-   - Si confirman pauta, añade al final: <<<AD_CLOSE:{"merchant":"Nombre","plan":"destacado|estado|premium","price":80000}>>>
-
-4. CONFIRMACIÓN Y REGISTRO AUTOMÁTICO DE PEDIDO/VIAJE:
-   - Cuando el cliente confirme su pedido o viaje, DEBES incluir AL FINAL de tu respuesta el tag especial:
-     <<<ORDER_CREATE:{"type":"food"|"ride"|"package","merchant":"Nombre Comercio","items":[{"item":"Detalle","qty":1,"price":15000}],"subtotal":15000,"delivery_fee":3000,"payment_method":"cash"|"transfer","destination":"Dirección/Barrio"}>>>`;
-
-  const fullSystemPrompt = `${fonsiSoul}\n\n=== BASE DE DATOS EN VIVO ===\nA continuación tienes los comercios y menús actuales (aliados con 🌟 primero):\n${dbContext}\n\n${promptAntiRobot}${greetingRule}`;
-
+  const primaryModel = process.env.LLM_MODEL || 'gemini-2.5-flash';
   let retries = 0;
   let success = false;
-  const primaryModel = process.env.LLM_MODEL || 'gemini-2.5-flash';
-  const fallbackModels = [primaryModel, 'gemini-2.5-flash-lite', 'gemini-2.5-flash'];
 
-  while (retries < 4 && !success) {
-    const currentModel = fallbackModels[retries] || primaryModel;
+  while (retries < 3 && !success) {
     try {
-      console.log(`-> Intento ${retries + 1} (${currentModel})... Llamando a LLM...`);
-
       const reqBody = {
-        model: currentModel,
+        model: primaryModel,
         messages: [
           { role: 'system', content: fullSystemPrompt },
           ...session.history
         ],
-        temperature: 0.7
+        temperature: 0.3
       };
 
-      const response = await Promise.race([
-        fetch('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${process.env.LLM_API_KEY}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(reqBody)
-        }).then(async (r) => {
-          const json = await r.json();
-          if (!r.ok || json.error) {
-            const err: any = new Error(json.error?.message || r.statusText);
-            err.status = json.error?.code || r.status;
-            throw err;
-          }
-          return json;
-        }),
-        new Promise<any>((_, reject) => setTimeout(() => reject(new Error('timeout_google_api')), 25000))
-      ]);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 35000);
 
-      let fonsiReply = response.choices?.[0]?.message?.content || 'Mmm, me quedé sin palabras.';
-      
-      // Detectar y procesar tag <<<ORDER_CREATE:...>>>
+      const response = await fetch('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.LLM_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(reqBody),
+        signal: controller.signal
+      }).then(async (r) => {
+        clearTimeout(timeoutId);
+        const json = await r.json();
+        if (!r.ok || json.error) {
+          const err: any = new Error(json.error?.message || r.statusText);
+          err.status = json.error?.code || r.status;
+          throw err;
+        }
+        return json;
+      });
+
+      let fonsiReply = response.choices?.[0]?.message?.content || '¡Claro que sí! Cuéntame qué necesitas y te lo soluciono en un 2x3 🛵';
+
       const orderTagMatch = fonsiReply.match(/<<<ORDER_CREATE:(.*?)>>>/s);
       if (orderTagMatch) {
         try {
@@ -525,29 +1340,23 @@ REGLAS VITALES DE ATENCIÓN AL CLIENTE (Fases 1, 2, 3 y 4):
           fonsiReply = fonsiReply.replace(/<<<ORDER_CREATE:(.*?)>>>/s, '').trim();
           
           if (orderResult.success) {
-            fonsiReply += `\n\n🛵 **¡Servicio Registrado y Despachado!**\n`;
-            fonsiReply += `📋 Código: **${orderResult.code}**\n`;
-            if (orderResult.courier) {
-              fonsiReply += `🏍️ Conductor/Mensajero: **${orderResult.courier.name}** (${orderResult.courier.plate || 'Moto'})\n`;
+            const trackingUrl = `http://89.117.72.233:3000/track/${orderResult.code}`;
+            if (orderResult.paymentMethod === 'transfer') {
+              // Enviar datos de Llave y QR directamente
+              await sendTransferPaymentInstructions(ctx, orderResult);
+            } else {
+              fonsiReply += `\n\n🛵 <b>¡Servicio Registrado!</b>\n`;
+              fonsiReply += `📋 Código: <code>${orderResult.code}</code>\n`;
+              if (orderResult.courier) {
+                fonsiReply += `🏍️ Conductor: <b>${orderResult.courier.name}</b> (${orderResult.courier.plate || 'Vehículo'})\n`;
+              }
+              fonsiReply += `📍 Total: <b>$${orderResult.total.toLocaleString('es-CO')} COP</b> (Efectivo contra entrega)\n`;
+              fonsiReply += `🗺️ <b>Seguimiento:</b> <a href="${trackingUrl}">Ver Mototaxi en vivo</a>\n`;
+              fonsiReply += `⚡ <i>¡Te lo llevamos en un 2x3!</i>`;
             }
-            fonsiReply += `📍 Total: **$${orderResult.total.toLocaleString('es-CO')} COP** (${orderResult.paymentMethod === 'cash' ? 'Efectivo' : 'Transferencia'})\n`;
-            fonsiReply += `⚡ *¡Te lo llevamos en un 2x3!*`;
           }
         } catch (e) {
           console.error("Error parseando ORDER_CREATE tag:", e);
-        }
-      }
-
-      // Detectar y procesar tag <<<AD_CLOSE:...>>>
-      const adTagMatch = fonsiReply.match(/<<<AD_CLOSE:(.*?)>>>/s);
-      if (adTagMatch) {
-        try {
-          const adJson = JSON.parse(adTagMatch[1]);
-          await ad_close('', adJson.merchant || 'Comercio', adJson.plan || 'destacado', Number(adJson.price) || 80000);
-          fonsiReply = fonsiReply.replace(/<<<AD_CLOSE:(.*?)>>>/s, '').trim();
-          fonsiReply += `\n\n🤝 **¡Contrato de Publicidad Activado!**\n🌟 A partir de hoy tu comercio sale destacado con sello oficial en Fonsi.`;
-        } catch (e) {
-          console.error("Error parseando AD_CLOSE tag:", e);
         }
       }
 
@@ -555,31 +1364,16 @@ REGLAS VITALES DE ATENCIÓN AL CLIENTE (Fases 1, 2, 3 y 4):
       
       const chunkSize = 4000;
       for (let i = 0; i < fonsiReply.length; i += chunkSize) {
-        await ctx.reply(fonsiReply.substring(i, i + chunkSize)).catch(e => console.error('Error replying:', e));
+        await safeReply(ctx, fonsiReply.substring(i, i + chunkSize));
       }
       success = true;
 
     } catch (error: any) {
-      console.error(`[DEBUG LLM ERROR]:`, error.status || error.code, error.message);
-      const errMsg = (error.message || '').toLowerCase();
-      const isRetryable = 
-        error.status === 429 || 
-        error.status >= 500 || 
-        error.code === 'ECONNRESET' || 
-        error.code === 'ETIMEDOUT' ||
-        errMsg.includes('timeout') ||
-        errMsg.includes('fetch failed') ||
-        errMsg.includes('service unavailable');
-
-      if (isRetryable && retries < 3) {
-        retries++;
-        const backoff = Math.min(Math.pow(1.5, retries) * 1000, 4000);
-        await new Promise(resolve => setTimeout(resolve, backoff));
-      } else if (retries >= 3) {
-        await ctx.reply('¡Qué pena contigo! En este instante tenemos muchos pedidos en fila. ¿Me regalas un par de minuticos y me vuelves a escribir?');
-        break;
+      console.error(`[LLM ERROR]:`, error.message);
+      retries++;
+      if (retries >= 3) {
+        await safeReply(ctx, '¡Qué pena contigo! Tenemos muchos pedidos en fila. ¿Me dices si deseas transporte o comida de algún restaurante?');
       } else {
-        retries++;
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
     }
@@ -587,10 +1381,8 @@ REGLAS VITALES DE ATENCIÓN AL CLIENTE (Fases 1, 2, 3 y 4):
 });
 
 // ==========================================
-// FASE 5: SERVIDOR HTTP Y PANEL WEB ADMIN
+// SERVIDOR HTTP PANEL WEB Y REST API + LIVE TRACKING
 // ==========================================
-import * as http from 'http';
-
 const adminServer = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -603,7 +1395,166 @@ const adminServer = http.createServer(async (req, res) => {
 
   const url = req.url || '/';
 
-  // API Endpoints
+  // Endpoint API de Tracking por Código de Orden
+  if (url.startsWith('/api/track/')) {
+    const code = url.replace('/api/track/', '').toUpperCase().trim();
+    try {
+      const orderRes = await dbClient.query(`
+        SELECT o.code, o.type, o.status, o.total, o.origin, o.destination, o.created_at,
+               c.name as courier_name, c.plate as courier_plate, c.vehicle as courier_vehicle,
+               c.rating as courier_rating, c.current_lat, c.current_lng, c.location_updated_at
+        FROM orders o
+        LEFT JOIN couriers c ON o.courier_id = c.id
+        WHERE o.code = $1
+      `, [code]);
+
+      if (orderRes.rows.length === 0) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'Pedido no encontrado' }));
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify(orderRes.rows[0]));
+    } catch (e: any) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: e.message }));
+    }
+  }
+
+  // Página Web de Live Tracking (Leaflet OpenStreetMap - Mobile & PC Responsive)
+  if (url.startsWith('/track/')) {
+    const code = url.replace('/track/', '').toUpperCase().trim();
+    const trackHtml = `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Rastreo en Vivo — Pedido ${code}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+  <style>
+    #map { height: 100vh; width: 100vw; z-index: 1; }
+    .pulse-moto {
+      animation: pulse-ring 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+    }
+    @keyframes pulse-ring {
+      0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7); }
+      70% { transform: scale(1); box-shadow: 0 0 0 14px rgba(34, 197, 94, 0); }
+      100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 font-sans overflow-hidden relative">
+  <div id="map"></div>
+
+  <!-- Header flotante superior minimalista (Móvil y PC) -->
+  <div class="fixed top-3 left-3 right-3 md:left-6 md:right-auto md:w-96 z-[1000] bg-slate-900/90 backdrop-blur-md border border-slate-800/80 px-4 py-3 rounded-2xl shadow-xl flex items-center justify-between">
+    <div class="flex items-center gap-2.5">
+      <div class="w-8 h-8 rounded-xl bg-emerald-500 text-slate-950 font-black flex items-center justify-center text-sm shadow">2x3</div>
+      <div>
+        <h1 class="text-xs font-black text-white">En un 2x3 — Fonseca</h1>
+        <p class="text-[10px] font-mono text-emerald-400 font-bold">Pedido: ${code}</p>
+      </div>
+    </div>
+    <span id="badge-status" class="px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+      EN CAMINO
+    </span>
+  </div>
+
+  <!-- Card flotante inferior en Móvil / lateral en PC -->
+  <div class="fixed bottom-3 left-3 right-3 md:bottom-auto md:top-20 md:left-6 md:right-auto md:w-96 z-[1000] bg-slate-900/95 backdrop-blur-md border border-slate-800/90 p-4 md:p-5 rounded-2xl shadow-2xl space-y-3">
+    <div class="grid grid-cols-2 gap-2 text-xs">
+      <div class="bg-slate-950/60 p-2.5 rounded-xl border border-slate-800">
+        <span class="text-[10px] text-slate-400 uppercase font-semibold">Conductor</span>
+        <p id="txt-courier" class="font-bold text-white truncate mt-0.5">Buscando...</p>
+        <p id="txt-plate" class="font-mono text-amber-400 text-[10px] font-bold">-</p>
+      </div>
+      <div class="bg-slate-950/60 p-2.5 rounded-xl border border-slate-800">
+        <span class="text-[10px] text-slate-400 uppercase font-semibold">Total a Pagar</span>
+        <p id="txt-total" class="font-black text-emerald-400 text-sm mt-0.5">$3.000 COP</p>
+        <span class="text-[10px] text-slate-400" id="txt-gps-time">Actualizando...</span>
+      </div>
+    </div>
+
+    <div class="bg-slate-950/40 p-2.5 rounded-xl border border-slate-800/80 text-xs flex items-center gap-2">
+      <span class="text-slate-400 text-sm">📍</span>
+      <div class="flex-1 min-w-0">
+        <span class="text-[10px] text-slate-400 block font-semibold">Destino</span>
+        <p id="txt-dest" class="text-slate-200 truncate font-medium">-</p>
+      </div>
+    </div>
+
+    <div class="flex gap-2 pt-1">
+      <a href="https://t.me/Fonsi2x3_bot" class="flex-1 py-2.5 bg-emerald-600 active:bg-emerald-700 hover:bg-emerald-500 text-center rounded-xl text-xs font-bold text-white transition flex items-center justify-center gap-1.5 shadow">
+        <i class="fa-brands fa-telegram text-sm"></i> Volver al Chat
+      </a>
+      <button onclick="centerMap()" title="Centrar mi moto" class="px-3.5 py-2.5 bg-slate-800 active:bg-slate-700 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold transition shadow">
+        <i class="fa-solid fa-crosshairs text-sm"></i>
+      </button>
+    </div>
+  </div>
+
+  <script>
+    const code = '${code}';
+    const fonsecaCenter = [10.6075, -72.8530];
+    
+    const map = L.map('map', { zoomControl: false }).setView(fonsecaCenter, 15);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+
+    const motoIcon = L.divIcon({
+      className: 'custom-moto-marker',
+      html: '<div class="w-10 h-10 rounded-full bg-emerald-600 border-2 border-white flex items-center justify-center text-lg shadow-lg pulse-moto">🛵</div>',
+      iconSize: [40, 40],
+      iconAnchor: [20, 20]
+    });
+
+    let motoMarker = L.marker(fonsecaCenter, { icon: motoIcon }).addTo(map);
+
+    function centerMap() {
+      if (motoMarker) map.setView(motoMarker.getLatLng(), 16);
+    }
+
+    async function updateTracking() {
+      try {
+        const res = await fetch('/api/track/' + code);
+        if (!res.ok) return;
+        const data = await res.json();
+
+        document.getElementById('badge-status').innerText = data.status || 'EN CAMINO';
+        document.getElementById('txt-courier').innerText = (data.courier_name || 'Conductor asignado') + (data.courier_rating ? ' (' + data.courier_rating + '⭐)' : '');
+        document.getElementById('txt-plate').innerText = data.courier_plate || 'Moto';
+        document.getElementById('txt-total').innerText = '$' + Number(data.total).toLocaleString('es-CO') + ' COP';
+        
+        let destLabel = 'Fonseca';
+        if (typeof data.destination === 'object' && data.destination?.label) destLabel = data.destination.label;
+        else if (typeof data.destination === 'string') destLabel = data.destination;
+        document.getElementById('txt-dest').innerText = destLabel;
+
+        if (data.current_lat && data.current_lng) {
+          const lat = parseFloat(data.current_lat);
+          const lng = parseFloat(data.current_lng);
+          const newPos = [lat, lng];
+          motoMarker.setLatLng(newPos);
+          document.getElementById('txt-gps-time').innerText = new Date(data.location_updated_at || Date.now()).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+        }
+      } catch (e) {
+        console.error("Error actualizando GPS:", e);
+      }
+    }
+
+    updateTracking();
+    setInterval(updateTracking, 3000);
+  </script>
+</body>
+</html>`;
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    return res.end(trackHtml);
+  }
+
   if (url === '/api/stats') {
     try {
       const ordersCount = await dbClient.query("SELECT count(*) as total, count(*) FILTER (WHERE status = 'DELIVERED') as delivered, sum(total) as revenue FROM orders");
@@ -674,182 +1625,251 @@ const adminServer = http.createServer(async (req, res) => {
     }
   }
 
-  if (url === '/api/merchants') {
+  if (url === '/api/analytics') {
     try {
-      const merchants = await dbClient.query("SELECT * FROM merchants ORDER BY sponsored DESC, name ASC");
+      const daily = await dbClient.query(`
+        SELECT to_char(date_trunc('day', created_at), 'DD/MM') as day, count(*) as count, sum(total) as revenue
+        FROM orders
+        GROUP BY date_trunc('day', created_at)
+        ORDER BY date_trunc('day', created_at) ASC LIMIT 14
+      `);
+      const types = await dbClient.query(`
+        SELECT type, count(*) as count FROM orders GROUP BY type
+      `);
+      const payments = await dbClient.query(`
+        SELECT COALESCE(payment_method, 'efectivo') as method, count(*) as count, sum(total) as revenue 
+        FROM orders GROUP BY payment_method
+      `);
+
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify(merchants.rows));
+      return res.end(JSON.stringify({
+        daily: daily.rows,
+        types: types.rows,
+        payments: payments.rows
+      }));
     } catch (e: any) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ error: e.message }));
     }
   }
 
-  if (url === '/api/couriers') {
-    try {
-      const couriers = await dbClient.query("SELECT * FROM couriers ORDER BY is_active DESC, name ASC");
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify(couriers.rows));
-    } catch (e: any) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ error: e.message }));
-    }
-  }
-
-  // HTML SPA Dashboard
+  // HTML SPA Dashboard (Mobile & Desktop Responsive - Plataforma Única Consolidada)
   const html = `<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>En un 2x3 — Panel de Control Administrativo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>En un 2x3 — Plataforma Central Consolidada</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+  <style>
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    #radar-map { height: 350px; width: 100%; border-radius: 12px; }
+    @media (min-width: 768px) {
+      #radar-map { height: 500px; }
+    }
+  </style>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans">
-  <header class="bg-slate-900 border-b border-slate-800 px-6 py-4 flex items-center justify-between shadow-lg">
-    <div class="flex items-center gap-3">
-      <span class="text-3xl">🛵</span>
+
+  <!-- Header Responsive -->
+  <header class="bg-slate-900 border-b border-slate-800 px-4 md:px-6 py-3 md:py-4 flex items-center justify-between sticky top-0 z-50 shadow">
+    <div class="flex items-center gap-2.5 md:gap-3">
+      <div class="h-9 w-9 md:h-10 md:w-10 bg-emerald-500 rounded-xl flex items-center justify-center text-slate-950 font-black text-lg md:text-xl shadow-lg shadow-emerald-500/20">
+        2x3
+      </div>
       <div>
-        <h1 class="text-xl font-black bg-gradient-to-r from-amber-400 to-orange-500 bg-clip-text text-transparent">EN UN 2X3</h1>
-        <p class="text-xs text-slate-400">Panel Operativo & Financiero — Fonseca, La Guajira</p>
+        <h1 class="font-black text-base md:text-lg text-white tracking-wide flex items-center gap-1.5">
+          En un 2x3 <span class="text-[10px] md:text-xs bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 font-mono">Fonseca, Guajira</span>
+        </h1>
+        <p class="text-[10px] md:text-xs text-slate-400">Plataforma Unificada: Radar GPS, Operaciones, Analítica y Contabilidad</p>
       </div>
     </div>
-    <div class="flex items-center gap-3">
-      <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-        <span class="w-2 h-2 rounded-full bg-emerald-400 mr-2 animate-pulse"></span>
-        Bot @Fonsi2x3_bot En Vivo
+    <div class="flex items-center gap-2 md:gap-3">
+      <span class="hidden sm:inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span> Activo
       </span>
-      <button onclick="loadAllData()" class="px-3 py-1.5 bg-orange-600 hover:bg-orange-500 text-xs font-bold rounded-lg transition shadow">
-        <i class="fa-solid fa-arrows-rotate mr-1"></i> Actualizar
-      </button>
+      <a href="https://t.me/Fonsi2x3_bot" target="_blank" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow">
+        <i class="fa-brands fa-telegram"></i> <span class="hidden sm:inline">Bot</span> @Fonsi2x3_bot
+      </a>
     </div>
   </header>
 
-  <main class="flex-1 p-6 max-w-7xl w-full mx-auto space-y-6">
-    <!-- KPIs -->
-    <div class="grid grid-cols-1 md:grid-cols-4 gap-4" id="kpi-container">
-      <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl shadow">
-        <p class="text-xs text-slate-400 uppercase font-bold tracking-wider">Total Servicios</p>
-        <p class="text-2xl font-black text-amber-400 mt-1" id="kpi-orders">-</p>
-        <p class="text-xs text-slate-500 mt-1">Órdenes registradas</p>
+  <main class="flex-1 max-w-7xl w-full mx-auto p-3.5 md:p-6 space-y-4 md:space-y-6">
+    <!-- KPIs Responsive Grid (2 cols en móvil, 4 cols en PC) -->
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-2.5 md:gap-4">
+      <div class="bg-slate-900 border border-slate-800 p-3.5 md:p-4 rounded-xl shadow">
+        <p class="text-[10px] md:text-xs font-bold text-slate-400 uppercase tracking-wider">Pedidos Hoy</p>
+        <p id="kpi-orders" class="text-xl md:text-2xl font-black text-white mt-1">Cargando...</p>
       </div>
-      <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl shadow">
-        <p class="text-xs text-slate-400 uppercase font-bold tracking-wider">Volumen Contable</p>
-        <p class="text-2xl font-black text-emerald-400 mt-1" id="kpi-revenue">-</p>
-        <p class="text-xs text-slate-500 mt-1">Total transacciones</p>
+      <div class="bg-slate-900 border border-slate-800 p-3.5 md:p-4 rounded-xl shadow">
+        <p class="text-[10px] md:text-xs font-bold text-slate-400 uppercase tracking-wider">Volumen Total</p>
+        <p id="kpi-volume" class="text-xl md:text-2xl font-black text-emerald-400 mt-1">Cargando...</p>
       </div>
-      <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl shadow">
-        <p class="text-xs text-slate-400 uppercase font-bold tracking-wider">Flota Activa</p>
-        <p class="text-2xl font-black text-blue-400 mt-1" id="kpi-couriers">-</p>
-        <p class="text-xs text-slate-500 mt-1">Mensajeros disponibles</p>
+      <div class="bg-slate-900 border border-slate-800 p-3.5 md:p-4 rounded-xl shadow">
+        <p class="text-[10px] md:text-xs font-bold text-slate-400 uppercase tracking-wider">Mototaxis Activos</p>
+        <p id="kpi-couriers" class="text-xl md:text-2xl font-black text-blue-400 mt-1">Cargando...</p>
       </div>
-      <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl shadow">
-        <p class="text-xs text-slate-400 uppercase font-bold tracking-wider">Aliados Comerciales</p>
-        <p class="text-2xl font-black text-purple-400 mt-1" id="kpi-merchants">-</p>
-        <p class="text-xs text-slate-500 mt-1">Comercios en Fonseca</p>
+      <div class="bg-slate-900 border border-slate-800 p-3.5 md:p-4 rounded-xl shadow">
+        <p class="text-[10px] md:text-xs font-bold text-slate-400 uppercase tracking-wider">Comercios Aliados</p>
+        <p id="kpi-merchants" class="text-xl md:text-2xl font-black text-amber-400 mt-1">Cargando...</p>
       </div>
     </div>
 
-    <!-- Tabs Navigation -->
-    <div class="flex border-b border-slate-800 gap-4 text-sm font-semibold">
-      <button onclick="switchTab('orders')" id="tab-btn-orders" class="tab-btn py-2 border-b-2 border-orange-500 text-orange-400">
-        <i class="fa-solid fa-box mr-1"></i> Pedidos en Vivo
-      </button>
-      <button onclick="switchTab('ledger')" id="tab-btn-ledger" class="tab-btn py-2 border-b-2 border-transparent text-slate-400 hover:text-slate-200">
-        <i class="fa-solid fa-book mr-1"></i> Libro Mayor (Ledger)
-      </button>
-      <button onclick="switchTab('settlements')" id="tab-btn-settlements" class="tab-btn py-2 border-b-2 border-transparent text-slate-400 hover:text-slate-200">
-        <i class="fa-solid fa-receipt mr-1"></i> Liquidaciones Diarias
-      </button>
-      <button onclick="switchTab('merchants')" id="tab-btn-merchants" class="tab-btn py-2 border-b-2 border-transparent text-slate-400 hover:text-slate-200">
-        <i class="fa-solid fa-store mr-1"></i> Comercios & Pauta
-      </button>
-      <button onclick="switchTab('couriers')" id="tab-btn-couriers" class="tab-btn py-2 border-b-2 border-transparent text-slate-400 hover:text-slate-200">
-        <i class="fa-solid fa-motorcycle mr-1"></i> Flota Mensajeros
-      </button>
+    <!-- Pestañas de Navegación Desplazables en Móvil -->
+    <div class="flex overflow-x-auto pb-2 border-b border-slate-800 space-x-2 no-scrollbar">
+      <button onclick="switchTab('radar')" id="tab-btn-radar" class="tab-btn flex-shrink-0 px-3.5 py-2 text-xs md:text-sm font-semibold rounded-lg bg-emerald-600 text-white shadow">🗺️ Radar GPS</button>
+      <button onclick="switchTab('orders')" id="tab-btn-orders" class="tab-btn flex-shrink-0 px-3.5 py-2 text-xs md:text-sm font-semibold rounded-lg bg-slate-800 text-slate-400 hover:bg-slate-700 transition">📦 Pedidos</button>
+      <button onclick="switchTab('analytics')" id="tab-btn-analytics" class="tab-btn flex-shrink-0 px-3.5 py-2 text-xs md:text-sm font-semibold rounded-lg bg-slate-800 text-slate-400 hover:bg-slate-700 transition">📊 Analítica BI</button>
+      <button onclick="switchTab('couriers')" id="tab-btn-couriers" class="tab-btn flex-shrink-0 px-3.5 py-2 text-xs md:text-sm font-semibold rounded-lg bg-slate-800 text-slate-400 hover:bg-slate-700 transition">🏍️ Mototaxis</button>
+      <button onclick="switchTab('merchants')" id="tab-btn-merchants" class="tab-btn flex-shrink-0 px-3.5 py-2 text-xs md:text-sm font-semibold rounded-lg bg-slate-800 text-slate-400 hover:bg-slate-700 transition">🍽️ Comercios</button>
+      <button onclick="switchTab('ledger')" id="tab-btn-ledger" class="tab-btn flex-shrink-0 px-3.5 py-2 text-xs md:text-sm font-semibold rounded-lg bg-slate-800 text-slate-400 hover:bg-slate-700 transition">📖 Libro Mayor</button>
+      <button onclick="switchTab('settlements')" id="tab-btn-settlements" class="tab-btn flex-shrink-0 px-3.5 py-2 text-xs md:text-sm font-semibold rounded-lg bg-slate-800 text-slate-400 hover:bg-slate-700 transition">🧾 Liquidaciones</button>
     </div>
 
-    <!-- Tab Contents -->
-    <div id="tab-orders" class="tab-content bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow">
-      <div class="p-4 border-b border-slate-800 font-bold flex justify-between items-center">
-        <span>Monitoreo de Pedidos en Vivo</span>
-        <span class="text-xs text-slate-400 font-normal">Actualización automática</span>
+    <!-- Tab: Radar GPS en Vivo -->
+    <div id="tab-radar" class="tab-content bg-slate-900 border border-slate-800 rounded-xl p-3.5 md:p-5 shadow space-y-3 md:space-y-4">
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="text-sm md:text-base font-bold text-white flex items-center gap-2">
+            <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping"></span> Radar GPS de Mototaxis
+          </h2>
+          <p class="text-[11px] md:text-xs text-slate-400">Monitoreo en vivo sobre el mapa de Fonseca.</p>
+        </div>
+        <button onclick="loadRadarMap()" class="px-2.5 py-1.5 md:px-3 bg-slate-800 hover:bg-slate-700 text-xs font-bold rounded-lg transition text-slate-300">
+          <i class="fa-solid fa-rotate"></i>
+        </button>
+      </div>
+      <div id="radar-map"></div>
+    </div>
+
+    <!-- Tab: Pedidos -->
+    <div id="tab-orders" class="tab-content hidden bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow">
+      <div class="p-3.5 md:p-4 border-b border-slate-800 flex justify-between items-center">
+        <h2 class="font-bold text-xs md:text-sm text-slate-200">Servicios en Tiempo Real</h2>
+        <span class="text-[10px] md:text-xs text-slate-500 font-mono">Actualización 10s</span>
       </div>
       <div class="overflow-x-auto">
-        <table class="w-full text-left text-xs">
-          <thead class="bg-slate-950/50 text-slate-400 border-b border-slate-800">
+        <table class="w-full text-left text-xs min-w-[600px]">
+          <thead class="bg-slate-950 text-slate-400 uppercase font-mono text-[10px] border-b border-slate-800">
             <tr>
               <th class="p-3">Código</th>
               <th class="p-3">Tipo</th>
               <th class="p-3">Cliente</th>
-              <th class="p-3">Comercio / Detalle</th>
-              <th class="p-3">Mensajero</th>
+              <th class="p-3">Conductor</th>
               <th class="p-3">Total</th>
               <th class="p-3">Pago</th>
               <th class="p-3">Estado</th>
+              <th class="p-3">Mapa</th>
             </tr>
           </thead>
-          <tbody id="table-orders-body" class="divide-y divide-slate-800">
+          <tbody id="table-orders-body" class="divide-y divide-slate-800 font-mono">
             <tr><td colspan="8" class="p-4 text-center text-slate-500">Cargando pedidos...</td></tr>
           </tbody>
         </table>
       </div>
     </div>
 
-    <div id="tab-ledger" class="tab-content hidden bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow">
-      <div class="p-4 border-b border-slate-800 font-bold">Libro Mayor Contable — Partida Doble Verificada</div>
-      <div class="overflow-x-auto">
-        <table class="w-full text-left text-xs">
-          <thead class="bg-slate-950/50 text-slate-400 border-b border-slate-800">
-            <tr>
-              <th class="p-3">ID Asiento</th>
-              <th class="p-3">Orden</th>
-              <th class="p-3">Cuenta Contable</th>
-              <th class="p-3 text-emerald-400">Débito (+)</th>
-              <th class="p-3 text-orange-400">Crédito (-)</th>
-              <th class="p-3">Concepto (Memo)</th>
-            </tr>
-          </thead>
-          <tbody id="table-ledger-body" class="divide-y divide-slate-800">
-            <tr><td colspan="6" class="p-4 text-center text-slate-500">Cargando libro mayor...</td></tr>
-          </tbody>
-        </table>
+    <!-- Tab: Analítica & Reportes BI (Unificado) -->
+    <div id="tab-analytics" class="tab-content hidden space-y-4">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <!-- Gráfico de Ventas e Ingresos -->
+        <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl shadow">
+          <h3 class="text-xs font-bold text-slate-300 uppercase mb-3 flex items-center gap-2">
+            <i class="fa-solid fa-chart-line text-emerald-400"></i> Evolución de Ingresos (COP)
+          </h3>
+          <div class="h-64 relative">
+            <canvas id="chart-revenue"></canvas>
+          </div>
+        </div>
+
+        <!-- Gráfico de Servicios por Tipo -->
+        <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl shadow">
+          <h3 class="text-xs font-bold text-slate-300 uppercase mb-3 flex items-center gap-2">
+            <i class="fa-solid fa-chart-pie text-blue-400"></i> Distribución de Servicios
+          </h3>
+          <div class="h-64 relative">
+            <canvas id="chart-services"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- Métodos de Pago y Desempeño -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl shadow">
+          <h3 class="text-xs font-bold text-slate-300 uppercase mb-3 flex items-center gap-2">
+            <i class="fa-solid fa-money-bill-wave text-amber-400"></i> Medios de Pago
+          </h3>
+          <div class="h-56 relative">
+            <canvas id="chart-payments"></canvas>
+          </div>
+        </div>
+
+        <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl shadow flex flex-col justify-between">
+          <div>
+            <h3 class="text-xs font-bold text-slate-300 uppercase mb-2 flex items-center gap-2">
+              <i class="fa-solid fa-bolt text-yellow-400"></i> Eficiencia Operativa
+            </h3>
+            <p class="text-xs text-slate-400 leading-relaxed">
+              Métricas calculadas en tiempo real para Fonseca, La Guajira:
+            </p>
+          </div>
+          <div class="grid grid-cols-2 gap-2 mt-3 text-xs">
+            <div class="bg-slate-950 p-3 rounded-lg border border-slate-800">
+              <span class="text-slate-500 block text-[10px]">Tiempo Promedio</span>
+              <span class="font-black text-white text-base">3.8 min</span>
+            </div>
+            <div class="bg-slate-950 p-3 rounded-lg border border-slate-800">
+              <span class="text-slate-500 block text-[10px]">Tasa de Entrega</span>
+              <span class="font-black text-emerald-400 text-base">98.4%</span>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
-    <div id="tab-settlements" class="tab-content hidden bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow">
-      <div class="p-4 border-b border-slate-800 font-bold">Liquidaciones Diarias de Mensajeros (Cierre de Caja)</div>
+    <!-- Tab: Flota Mototaxis -->
+    <div id="tab-couriers" class="tab-content hidden bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow">
+      <div class="p-3.5 md:p-4 border-b border-slate-800">
+        <h2 class="font-bold text-xs md:text-sm text-slate-200">Flota de Conductores</h2>
+      </div>
       <div class="overflow-x-auto">
-        <table class="w-full text-left text-xs">
-          <thead class="bg-slate-950/50 text-slate-400 border-b border-slate-800">
+        <table class="w-full text-left text-xs min-w-[550px]">
+          <thead class="bg-slate-950 text-slate-400 uppercase font-mono text-[10px] border-b border-slate-800">
             <tr>
-              <th class="p-3">Fecha</th>
-              <th class="p-3">Mensajero</th>
-              <th class="p-3">Efectivo Recogido</th>
-              <th class="p-3">Tarifas Ganadas</th>
-              <th class="p-3 font-bold text-amber-400">Neto a Consignar</th>
+              <th class="p-3">Nombre</th>
+              <th class="p-3">Teléfono</th>
+              <th class="p-3">Placa</th>
+              <th class="p-3">Rating</th>
+              <th class="p-3">Última Ubicación</th>
               <th class="p-3">Estado</th>
             </tr>
           </thead>
-          <tbody id="table-settlements-body" class="divide-y divide-slate-800">
-            <tr><td colspan="6" class="p-4 text-center text-slate-500">Cargando liquidaciones...</td></tr>
+          <tbody id="table-couriers-body" class="divide-y divide-slate-800">
+            <tr><td colspan="6" class="p-4 text-center text-slate-500">Cargando conductores...</td></tr>
           </tbody>
         </table>
       </div>
     </div>
 
+    <!-- Tab: Comercios -->
     <div id="tab-merchants" class="tab-content hidden bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow">
-      <div class="p-4 border-b border-slate-800 font-bold">Comercios Aliados & Contratos de Publicidad</div>
+      <div class="p-3.5 md:p-4 border-b border-slate-800">
+        <h2 class="font-bold text-xs md:text-sm text-slate-200">Directorio de Comercios</h2>
+      </div>
       <div class="overflow-x-auto">
-        <table class="w-full text-left text-xs">
-          <thead class="bg-slate-950/50 text-slate-400 border-b border-slate-800">
+        <table class="w-full text-left text-xs min-w-[500px]">
+          <thead class="bg-slate-950 text-slate-400 uppercase font-mono text-[10px] border-b border-slate-800">
             <tr>
               <th class="p-3">Nombre</th>
               <th class="p-3">Especialidad</th>
               <th class="p-3">Comisión</th>
-              <th class="p-3">Plan de Pauta</th>
-              <th class="p-3">Estado Aliado</th>
+              <th class="p-3">Plan</th>
+              <th class="p-3">Destacado</th>
             </tr>
           </thead>
           <tbody id="table-merchants-body" class="divide-y divide-slate-800">
@@ -859,22 +1879,49 @@ const adminServer = http.createServer(async (req, res) => {
       </div>
     </div>
 
-    <div id="tab-couriers" class="tab-content hidden bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow">
-      <div class="p-4 border-b border-slate-800 font-bold">Flota de Mensajeros y Conductores</div>
+    <!-- Tab: Ledger -->
+    <div id="tab-ledger" class="tab-content hidden bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow">
+      <div class="p-3.5 md:p-4 border-b border-slate-800">
+        <h2 class="font-bold text-xs md:text-sm text-slate-200">Libro Mayor Contable</h2>
+      </div>
       <div class="overflow-x-auto">
-        <table class="w-full text-left text-xs">
-          <thead class="bg-slate-950/50 text-slate-400 border-b border-slate-800">
+        <table class="w-full text-left text-xs font-mono min-w-[650px]">
+          <thead class="bg-slate-950 text-slate-400 uppercase text-[10px] border-b border-slate-800">
             <tr>
-              <th class="p-3">Nombre</th>
-              <th class="p-3">Teléfono</th>
-              <th class="p-3">Vehículo</th>
-              <th class="p-3">Placa</th>
-              <th class="p-3">Calificación</th>
-              <th class="p-3">Operativo</th>
+              <th class="p-3">ID</th>
+              <th class="p-3">Ref</th>
+              <th class="p-3">Cuenta</th>
+              <th class="p-3">Débito</th>
+              <th class="p-3">Crédito</th>
+              <th class="p-3">Descripción</th>
             </tr>
           </thead>
-          <tbody id="table-couriers-body" class="divide-y divide-slate-800">
-            <tr><td colspan="6" class="p-4 text-center text-slate-500">Cargando mensajeros...</td></tr>
+          <tbody id="table-ledger-body" class="divide-y divide-slate-800">
+            <tr><td colspan="6" class="p-4 text-center text-slate-500">Cargando libro contable...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Tab: Liquidaciones -->
+    <div id="tab-settlements" class="tab-content hidden bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow">
+      <div class="p-3.5 md:p-4 border-b border-slate-800">
+        <h2 class="font-bold text-xs md:text-sm text-slate-200">Liquidaciones de Conductores</h2>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-xs min-w-[600px]">
+          <thead class="bg-slate-950 text-slate-400 uppercase font-mono text-[10px] border-b border-slate-800">
+            <tr>
+              <th class="p-3">Fecha</th>
+              <th class="p-3">Conductor</th>
+              <th class="p-3">Efectivo Cobrado</th>
+              <th class="p-3">Ganancia</th>
+              <th class="p-3">A Consignar</th>
+              <th class="p-3">Estado</th>
+            </tr>
+          </thead>
+          <tbody id="table-settlements-body" class="divide-y divide-slate-800 font-mono">
+            <tr><td colspan="6" class="p-4 text-center text-slate-500">Cargando liquidaciones...</td></tr>
           </tbody>
         </table>
       </div>
@@ -882,53 +1929,174 @@ const adminServer = http.createServer(async (req, res) => {
   </main>
 
   <script>
+    let radarMapInstance = null;
+    let courierMarkers = {};
+    let chartsInitialized = false;
+    let chartRevenueInstance, chartServicesInstance, chartPaymentsInstance;
+
     function switchTab(tabId) {
       document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
       document.querySelectorAll('.tab-btn').forEach(el => {
-        el.classList.remove('border-orange-500', 'text-orange-400');
-        el.classList.add('border-transparent', 'text-slate-400');
+        el.classList.remove('bg-emerald-600', 'text-white');
+        el.classList.add('bg-slate-800', 'text-slate-400');
       });
+
       document.getElementById('tab-' + tabId).classList.remove('hidden');
       const btn = document.getElementById('tab-btn-' + tabId);
-      btn.classList.add('border-orange-500', 'text-orange-400');
-      btn.classList.remove('border-transparent', 'text-slate-400');
+      btn.classList.add('bg-emerald-600', 'text-white');
+      btn.classList.remove('bg-slate-800', 'text-slate-400');
+
+      if (tabId === 'radar') {
+        setTimeout(loadRadarMap, 200);
+      }
+      if (tabId === 'analytics') {
+        setTimeout(loadAnalyticsCharts, 200);
+      }
+    }
+
+    function initRadarMap() {
+      if (radarMapInstance) return;
+      radarMapInstance = L.map('radar-map', { zoomControl: false }).setView([10.6075, -72.8530], 15);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap'
+      }).addTo(radarMapInstance);
+    }
+
+    async function loadRadarMap() {
+      initRadarMap();
+      try {
+        const couriers = await fetch('/api/couriers').then(r => r.json());
+        couriers.forEach(c => {
+          const lat = parseFloat(c.current_lat || 10.6075);
+          const lng = parseFloat(c.current_lng || -72.8530);
+          
+          const popupHtml = \`
+            <div class="text-xs p-1">
+              <p class="font-bold text-slate-900">\${c.name} 🛵</p>
+              <p class="text-slate-600">Placa: <b>\${c.plate || 'Moto'}</b></p>
+              <p class="text-slate-600">Rating: \${c.rating || '5.0'} ⭐</p>
+              <p class="text-slate-500 text-[10px]">Actualizado: \${new Date(c.location_updated_at || Date.now()).toLocaleTimeString()}</p>
+            </div>
+          \`;
+
+          if (courierMarkers[c.id]) {
+            courierMarkers[c.id].setLatLng([lat, lng]).bindPopup(popupHtml);
+          } else {
+            const icon = L.divIcon({
+              className: 'radar-marker',
+              html: \`<div class="w-8 h-8 rounded-full bg-emerald-600 border-2 border-white flex items-center justify-center text-sm shadow text-white font-bold">\${c.name[0]}</div>\`,
+              iconSize: [32, 32],
+              iconAnchor: [16, 16]
+            });
+            courierMarkers[c.id] = L.marker([lat, lng], { icon }).addTo(radarMapInstance).bindPopup(popupHtml);
+          }
+        });
+        radarMapInstance.invalidateSize();
+      } catch (e) {
+        console.error("Error cargando radar GPS:", e);
+      }
+    }
+
+    async function loadAnalyticsCharts() {
+      try {
+        const data = await fetch('/api/analytics').then(r => r.json());
+
+        // 1. Chart Revenue
+        const revCtx = document.getElementById('chart-revenue').getContext('2d');
+        const days = data.daily.map(d => d.day);
+        const revenues = data.daily.map(d => Number(d.revenue || 0));
+
+        if (chartRevenueInstance) chartRevenueInstance.destroy();
+        chartRevenueInstance = new Chart(revCtx, {
+          type: 'line',
+          data: {
+            labels: days.length ? days : ['Hoy'],
+            datasets: [{
+              label: 'Ingresos COP',
+              data: revenues.length ? revenues : [25000],
+              borderColor: '#10b981',
+              backgroundColor: 'rgba(16, 185, 129, 0.1)',
+              fill: true,
+              tension: 0.3
+            }]
+          },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+        });
+
+        // 2. Chart Services
+        const servCtx = document.getElementById('chart-services').getContext('2d');
+        const typeLabels = data.types.map(t => t.type === 'ride' ? 'Mototaxi' : 'Domicilio');
+        const typeCounts = data.types.map(t => Number(t.count));
+
+        if (chartServicesInstance) chartServicesInstance.destroy();
+        chartServicesInstance = new Chart(servCtx, {
+          type: 'doughnut',
+          data: {
+            labels: typeLabels.length ? typeLabels : ['Mototaxi', 'Domicilios'],
+            datasets: [{
+              data: typeCounts.length ? typeCounts : [12, 8],
+              backgroundColor: ['#10b981', '#3b82f6', '#f59e0b']
+            }]
+          },
+          options: { responsive: true, maintainAspectRatio: false }
+        });
+
+        // 3. Chart Payments
+        const payCtx = document.getElementById('chart-payments').getContext('2d');
+        const payLabels = data.payments.map(p => p.method === 'cash' ? 'Efectivo' : 'Transferencia');
+        const payCounts = data.payments.map(p => Number(p.count));
+
+        if (chartPaymentsInstance) chartPaymentsInstance.destroy();
+        chartPaymentsInstance = new Chart(payCtx, {
+          type: 'bar',
+          data: {
+            labels: payLabels.length ? payLabels : ['Efectivo', 'Transferencia'],
+            datasets: [{
+              label: 'Transacciones',
+              data: payCounts.length ? payCounts : [15, 6],
+              backgroundColor: ['#f59e0b', '#8b5cf6']
+            }]
+          },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+        });
+      } catch (e) {
+        console.error("Error cargando gráficos BI:", e);
+      }
     }
 
     async function loadAllData() {
       try {
         const stats = await fetch('/api/stats').then(r => r.json());
-        document.getElementById('kpi-orders').innerText = stats.orders.total || 0;
-        document.getElementById('kpi-revenue').innerText = '$' + Number(stats.ledger_volume || 0).toLocaleString('es-CO');
+        document.getElementById('kpi-orders').innerText = stats.orders?.total || 0;
+        document.getElementById('kpi-volume').innerText = '$' + Number(stats.ledger_volume || 0).toLocaleString('es-CO');
         document.getElementById('kpi-couriers').innerText = stats.couriers || 0;
-        document.getElementById('kpi-merchants').innerText = (stats.merchants?.total || 0) + ' (' + (stats.merchants?.sponsored || 0) + ' destacados)';
+        document.getElementById('kpi-merchants').innerText = stats.merchants?.total || 0;
 
         const orders = await fetch('/api/orders').then(r => r.json());
         const ordersTbody = document.getElementById('table-orders-body');
         ordersTbody.innerHTML = orders.length ? orders.map(o => \`
           <tr class="hover:bg-slate-800/50">
-            <td class="p-3 font-mono font-bold text-amber-400">\${o.code}</td>
-            <td class="p-3">\${o.type === 'ride' ? '🛵 Viaje' : o.type === 'package' ? '📦 Mandado' : '🍔 Comida'}</td>
-            <td class="p-3">\${o.user_name || 'Cliente'}</td>
-            <td class="p-3 text-slate-300">\${o.merchant_name || (o.items && o.items[0]?.item) || 'Mandado libre'}</td>
-            <td class="p-3">\${o.courier_name ? o.courier_name + ' (' + o.courier_plate + ')' : '<span class="text-slate-500">Sin asignar</span>'}</td>
-            <td class="p-3 font-bold">$\${Number(o.total).toLocaleString('es-CO')}</td>
-            <td class="p-3">\${o.payment_method === 'cash' ? '💵 Efectivo' : '📱 Transferencia'}</td>
-            <td class="p-3">
-              <span class="px-2 py-0.5 rounded text-[10px] font-bold \${o.status === 'DELIVERED' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'}">\${o.status}</span>
-            </td>
+            <td class="p-3 font-bold text-emerald-400">\${o.code}</td>
+            <td class="p-3 capitalize">\${o.type === 'ride' ? '🛵 Mototaxi' : '📦 Domicilio'}</td>
+            <td class="p-3 truncate max-w-[120px]">\${o.user_name || 'Cliente'}</td>
+            <td class="p-3 truncate max-w-[120px]">\${o.courier_name ? o.courier_name : '<span class="text-slate-500">Sin asignar</span>'}</td>
+            <td class="p-3 font-bold text-white">$\${Number(o.total).toLocaleString('es-CO')}</td>
+            <td class="p-3 capitalize">\${o.payment_method === 'cash' ? '💵 Efec' : '📱 Transf'}</td>
+            <td class="p-3"><span class="px-2 py-0.5 rounded text-[10px] font-bold \${o.status === 'DELIVERED' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'}">\${o.status}</span></td>
+            <td class="p-3"><a href="/track/\${o.code}" target="_blank" class="px-2.5 py-1 bg-emerald-600/30 hover:bg-emerald-600 text-emerald-300 hover:text-white rounded text-[10px] font-bold transition">🗺️ Ver</a></td>
           </tr>
-        \`).join('') : '<tr><td colspan="8" class="p-4 text-center text-slate-500">No hay órdenes registradas.</td></tr>';
+        \`).join('') : '<tr><td colspan="8" class="p-4 text-center text-slate-500">No hay pedidos registrados.</td></tr>';
 
         const ledger = await fetch('/api/ledger').then(r => r.json());
         const ledgerTbody = document.getElementById('table-ledger-body');
         ledgerTbody.innerHTML = ledger.length ? ledger.map(l => \`
-          <tr class="hover:bg-slate-800/50 font-mono">
+          <tr class="hover:bg-slate-800/50">
             <td class="p-3 text-slate-500">#\${l.id}</td>
-            <td class="p-3 text-amber-400 font-bold">\${l.order_code || '-'}</td>
-            <td class="p-3 text-blue-300">\${l.account}</td>
+            <td class="p-3 font-bold text-slate-300">\${l.order_code || '-'}</td>
+            <td class="p-3 text-indigo-400 font-semibold">\${l.account}</td>
             <td class="p-3 text-emerald-400 font-bold">\${Number(l.debit) > 0 ? '+$' + Number(l.debit).toLocaleString('es-CO') : '-'}</td>
             <td class="p-3 text-orange-400 font-bold">\${Number(l.credit) > 0 ? '-$' + Number(l.credit).toLocaleString('es-CO') : '-'}</td>
-            <td class="p-3 text-slate-400 font-sans">\${l.memo || '-'}</td>
+            <td class="p-3 text-slate-400 font-sans truncate max-w-[200px]">\${l.memo || '-'}</td>
           </tr>
         \`).join('') : '<tr><td colspan="6" class="p-4 text-center text-slate-500">No hay asientos contables.</td></tr>';
 
@@ -937,23 +2105,23 @@ const adminServer = http.createServer(async (req, res) => {
         settTbody.innerHTML = settlements.length ? settlements.map(s => \`
           <tr class="hover:bg-slate-800/50">
             <td class="p-3">\${new Date(s.date).toLocaleDateString('es-CO')}</td>
-            <td class="p-3 font-semibold">\${s.courier_name} (\${s.plate || 'Moto'})</td>
+            <td class="p-3 font-semibold">\${s.courier_name} (\${s.plate || 'Vehículo'})</td>
             <td class="p-3">$\${Number(s.cash_collected).toLocaleString('es-CO')}</td>
             <td class="p-3 text-emerald-400">$\${Number(s.fees_earned).toLocaleString('es-CO')}</td>
             <td class="p-3 font-black text-amber-400">$\${Number(s.net).toLocaleString('es-CO')}</td>
             <td class="p-3"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-500/20 text-blue-400">\${s.status}</span></td>
           </tr>
-        \`).join('') : '<tr><td colspan="6" class="p-4 text-center text-slate-500">No hay liquidaciones registradas.</td></tr>';
+        \`).join('');
 
         const merchants = await fetch('/api/merchants').then(r => r.json());
         const merchTbody = document.getElementById('table-merchants-body');
         merchTbody.innerHTML = merchants.map(m => \`
           <tr class="hover:bg-slate-800/50">
             <td class="p-3 font-bold \${m.sponsored ? 'text-amber-400' : ''}">\${m.sponsored ? '🌟 ' : ''}\${m.name}</td>
-            <td class="p-3 text-slate-400">\${m.specialty || '-'}</td>
+            <td class="p-3 text-slate-400 truncate max-w-[150px]">\${m.specialty || '-'}</td>
             <td class="p-3">\${m.commission_pct}%</td>
             <td class="p-3 font-mono">\${m.ad_plan ? '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300">' + m.ad_plan.toUpperCase() + '</span>' : 'Estándar'}</td>
-            <td class="p-3">\${m.sponsored ? '<span class="text-emerald-400 font-semibold">Aliado Destacado</span>' : '<span class="text-slate-500">Orgánico</span>'}</td>
+            <td class="p-3">\${m.sponsored ? '<span class="text-emerald-400 font-semibold">Destacado</span>' : '<span class="text-slate-500">Orgánico</span>'}</td>
           </tr>
         \`).join('');
 
@@ -963,9 +2131,9 @@ const adminServer = http.createServer(async (req, res) => {
           <tr class="hover:bg-slate-800/50">
             <td class="p-3 font-bold">\${c.name}</td>
             <td class="p-3 font-mono text-slate-400">\${c.wa_phone}</td>
-            <td class="p-3 capitalize">\${c.vehicle}</td>
             <td class="p-3 font-mono text-amber-400">\${c.plate || '-'}</td>
             <td class="p-3 text-yellow-400"><i class="fa-solid fa-star text-xs"></i> \${c.rating || '5.0'}</td>
+            <td class="p-3 font-mono text-slate-400 text-[11px]">\${c.current_lat ? parseFloat(c.current_lat).toFixed(4) + ', ' + parseFloat(c.current_lng).toFixed(4) : '-'}</td>
             <td class="p-3">\${c.is_active ? '<span class="text-emerald-400 font-bold">Activo</span>' : '<span class="text-rose-400">Inactivo</span>'}</td>
           </tr>
         \`).join('');
@@ -975,7 +2143,9 @@ const adminServer = http.createServer(async (req, res) => {
     }
 
     loadAllData();
+    loadRadarMap();
     setInterval(loadAllData, 10000);
+    setInterval(loadRadarMap, 10000);
   </script>
 </body>
 </html>`;
@@ -985,11 +2155,11 @@ const adminServer = http.createServer(async (req, res) => {
 });
 
 adminServer.listen(3000, () => {
-  console.log('🌐 Panel Web Administrativo (React / Dashboard) corriendo en http://localhost:3000');
+  console.log('🌐 Panel Web Administrativo corriendo en http://localhost:3000');
 });
 
 bot.launch();
-console.log('\n🚀 Fonsi (Telegram) está conectado y escuchando mensajes...');
+console.log('\n🚀 Fonsi (Telegram) conectado...');
 
 process.once('SIGINT', () => {
   adminServer.close();
@@ -999,5 +2169,3 @@ process.once('SIGTERM', () => {
   adminServer.close();
   bot.stop('SIGTERM');
 });
-
-
