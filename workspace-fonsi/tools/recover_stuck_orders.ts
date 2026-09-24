@@ -42,7 +42,7 @@ export async function recover_stuck_orders() {
     return {
       status: 'success',
       message: recovered.length > 0 
-        ? \`Se encontraron \${recovered.length} pedidos retrasados/perdidos y se volvieron a activar para reasignación.\` 
+        ? `Se encontraron ${recovered.length} pedidos retrasados/perdidos y se volvieron a activar para reasignación.` 
         : 'Todos los pedidos están en tiempo óptimo. No hay pedidos perdidos.',
       recovered_orders: recovered
     };
