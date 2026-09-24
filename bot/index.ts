@@ -120,6 +120,27 @@ const { ad_pitch } = require(path.join(toolsBasePath, 'ad_pitch'));
 const { ad_close } = require(path.join(toolsBasePath, 'ad_close'));
 const { status_publish } = require(path.join(toolsBasePath, 'status_publish'));
 const { merchant_list } = require(path.join(toolsBasePath, 'merchant_list'));
+const { recover_stuck_orders } = require(path.join(toolsBasePath, 'recover_stuck_orders'));
+
+// Watchdog automático para pedidos retrasados / atascados (> 45 min) cada 5 minutos
+setInterval(async () => {
+  try {
+    const res = await recover_stuck_orders();
+    if (res.recovered_orders && res.recovered_orders.length > 0) {
+      console.log(`🔄 [WATCHDOG] Se recuperaron y reactivaron ${res.recovered_orders.length} pedidos retrasados: ${res.recovered_orders.join(', ')}`);
+      // Reasignar automáticamente un conductor disponible a cada pedido recuperado
+      for (const code of res.recovered_orders) {
+        const courierRes = await dbClient.query("SELECT id FROM couriers WHERE is_active = true ORDER BY RANDOM() LIMIT 1");
+        if (courierRes.rows.length > 0) {
+          await dbClient.query("UPDATE orders SET courier_id = $1, status = 'ON_THE_WAY' WHERE code = $2", [courierRes.rows[0].id, code]);
+          console.log(`🛵 [REASIGNACIÓN] Pedido ${code} reasignado al conductor ID ${courierRes.rows[0].id}`);
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn("Error en watchdog de pedidos retrasados:", err?.message);
+  }
+}, 5 * 60 * 1000);
 
 // Cargar personalidad SOUL.md
 let fonsiSoul = "Eres Fonsi, el asistente oficial de 'En un 2x3' en Fonseca, La Guajira. Respuestas cortas y directas.";
@@ -1096,6 +1117,31 @@ bot.command('relay', async (ctx) => {
   const order = orderRes.rows[0];
   await relay_message(order.id, 'user', text);
   await safeReply(ctx, `🔒 <b>Mensaje entregado a ${order.courier_name || 'tu conductor'}:</b>\n"${text}"`);
+});
+
+bot.command(['recuperar', 'retrasos', 'auditar'], async (ctx) => {
+  try {
+    const res = await recover_stuck_orders();
+    let msg = `⏱️ <b>Auditoría y Recuperación de Pedidos:</b>\n\n`;
+    if (res.recovered_orders && res.recovered_orders.length > 0) {
+      msg += `⚠️ Se encontraron <b>${res.recovered_orders.length}</b> pedidos con más de 45 min sin entregar.\n\n`;
+      msg += `🔄 <b>Pedidos reactivados para reasignación:</b>\n`;
+      for (const code of res.recovered_orders) {
+        msg += `• <code>${code}</code>\n`;
+        const courierRes = await dbClient.query("SELECT id, name FROM couriers WHERE is_active = true ORDER BY RANDOM() LIMIT 1");
+        if (courierRes.rows.length > 0) {
+          await dbClient.query("UPDATE orders SET courier_id = $1, status = 'ON_THE_WAY' WHERE code = $2", [courierRes.rows[0].id, code]);
+          msg += `  ↳ 🛵 <i>Reasignado a ${courierRes.rows[0].name}</i>\n`;
+        }
+      }
+    } else {
+      msg += `✅ <b>Todos los pedidos están en tiempo óptimo.</b>\nNo hay solicitudes atascadas ni perdidas en el sistema.`;
+    }
+    await safeReply(ctx, msg);
+  } catch (err: any) {
+    console.error("Error en comando recuperar:", err);
+    await safeReply(ctx, 'Error al ejecutar la auditoría de pedidos.');
+  }
 });
 
 bot.command('entregar', async (ctx) => {
