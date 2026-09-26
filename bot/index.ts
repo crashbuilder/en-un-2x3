@@ -3,7 +3,7 @@ import * as dotenv from 'dotenv';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as http from 'http';
-import { Client } from 'pg';
+import { Pool } from 'pg';
 
 dotenv.config();
 
@@ -60,7 +60,6 @@ async function notifyAdmins(text: string, extra?: any) {
     try {
       await bot.telegram.sendMessage(adminId, html, { parse_mode: 'HTML', ...(extra || {}) });
     } catch (e: any) {
-      // Si el bot no ha sido iniciado por el admin directamente, intentamos sin parse_mode o ignoramos
       try {
         await bot.telegram.sendMessage(adminId, text.replace(/[*_`]/g, ''), extra || {});
       } catch (e2) {}
@@ -68,18 +67,81 @@ async function notifyAdmins(text: string, extra?: any) {
   }
 }
 
-// PostgreSQL Client
-const dbClient = new Client({
+// Generador de Botones Inteligentes Contextuales para Respuestas de Texto
+function getSmartContextButtons(text: string, cleanText: string = '') {
+  const t = (cleanText + ' ' + (text || '').toLowerCase()).normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  
+  // 1. Mototaxi / Carrera / Transporte urbano
+  if (/moto|mototaxi|carrera|pasajero|transporte|recog|viaje urbano|primero de julio|villa luz|san agustin/i.test(t)) {
+    return Markup.inlineKeyboard([
+      [Markup.button.callback('🛵 1 Pasajero ($3.000)', 'moto_1_pax'), Markup.button.callback('👥 2 Pasajeros ($4.000)', 'moto_2_pax')],
+      [Markup.button.callback('🚗 Viaje Intermunicipal', 'btn_intermunicipal'), Markup.button.callback('📱 Menú Principal', 'btn_main_menu')]
+    ]);
+  }
+
+  // 2. Comida / Restaurantes / Domicilios / Almuerzo
+  if (/comida|restaurante|almuerzo|cena|desayuno|hamburguesa|pizza|pollo|asadero|salchipapa|don jediondo|la fogata|el paisa|tienda|farmacia|mercado/i.test(t)) {
+    return Markup.inlineKeyboard([
+      [Markup.button.callback('🍔 Don Jediondo', 'resto_1'), Markup.button.callback('🍕 La Fogata', 'resto_2')],
+      [Markup.button.callback('🍗 Asadero El Paisa', 'resto_3'), Markup.button.callback('🛒 Compras/Tienda', 'btn_compras_domicilio')],
+      [Markup.button.callback('🛵 Menú Principal', 'btn_main_menu')]
+    ]);
+  }
+
+  // 3. Viajes Intermunicipales
+  if (/intermunicipal|san juan|distraccion|barrancas|valledupar|riohacha|maicao|urumita|villanueva|hatonuevo/i.test(t)) {
+    return Markup.inlineKeyboard([
+      [Markup.button.callback('🚗 Distracción ($5.000)', 'inter_distraccion'), Markup.button.callback('🚗 San Juan ($10.000)', 'inter_sanjuan')],
+      [Markup.button.callback('🚗 Barrancas ($8.000)', 'inter_barrancas'), Markup.button.callback('🚗 Ver Todos los Destinos', 'btn_intermunicipal')],
+      [Markup.button.callback('🛵 Menú Principal', 'btn_main_menu')]
+    ]);
+  }
+
+  // 4. Conductor / Trabajo / Turno
+  if (/conductor|chofer|turno|trabajar|afiliar|inscribir/i.test(t)) {
+    return Markup.inlineKeyboard([
+      [Markup.button.callback('🛵 Mi Panel de Conductor', 'btn_courier_panel')],
+      [Markup.button.callback('📝 Registrarme como Conductor', 'start_driver_reg')],
+      [Markup.button.callback('🛵 Menú Principal', 'btn_main_menu')]
+    ]);
+  }
+
+  // 5. Estado de pedido / Dónde viene mi moto
+  if (/pedido|estado|donde viene|mi orden|mi moto|seguimiento/i.test(t)) {
+    return Markup.inlineKeyboard([
+      [Markup.button.callback('📋 Consultar Mi Servicio', 'btn_status_quick')],
+      [Markup.button.url('🗺️ Ver Radar en Vivo', 'http://89.117.72.233:3000')],
+      [Markup.button.callback('🛵 Menú Principal', 'btn_main_menu')]
+    ]);
+  }
+
+  // 6. Botones inteligentes híbridos por defecto
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('🛵 Pedir Mototaxi ($3.000)', 'btn_mototaxi'), Markup.button.callback('🍔 Pedir Domicilio', 'btn_domicilios')],
+    [Markup.button.callback('🚗 Viajes Intermunicipales', 'btn_intermunicipal'), Markup.button.url('🗺️ Radar GPS en Vivo', 'http://89.117.72.233:3000')],
+    [Markup.button.callback('📱 Menú Principal', 'btn_main_menu')]
+  ]);
+}
+
+// PostgreSQL Connection Pool (Resiliente a desconexiones y consultas concurrentes)
+const dbClient = new Pool({
   host: process.env.DB_HOST || 'postgres',
   user: process.env.DB_USER || 'fonsi_user',
   password: process.env.DB_PASSWORD || 'fonsi_password',
   database: process.env.DB_NAME || 'en_un_2x3',
+  max: 20,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 5000,
+});
+
+dbClient.on('error', (err) => {
+  console.error('⚠️ Error inesperado en el pool de PostgreSQL:', err.message);
 });
 
 async function initDatabase() {
   try {
-    await dbClient.connect();
-    console.log('✅ Conectado a PostgreSQL');
+    await dbClient.query('SELECT 1');
+    console.log('✅ Conectado a PostgreSQL (Pool Activo y Resiliente)');
     
     // Migración automática para soporte GPS en tiempo real y detalles de vehículos
     await dbClient.query(`
@@ -1925,6 +1987,12 @@ bot.on('text', async (ctx) => {
     }
   }
 
+  // 0.5. Escape inteligente de estados pendientes si el usuario hace una pregunta o cambia de tema
+  const isEscapeIntent = /^(hola|buenas|menu|inicio|cancelar|cancel|no|cuanto|donde|que |como |por que|precio|tarifa|restaurante|carta|horario|\?|¿|ayuda|asesor)/i.test(cleanText);
+  if (isEscapeIntent && session.pendingAction) {
+    session.pendingAction = null;
+  }
+
   // 1. Manejo de Flujo Interactivo Paso a Paso (PendingAction)
   if (session.pendingAction) {
     const pending = session.pendingAction;
@@ -1941,7 +2009,7 @@ bot.on('text', async (ctx) => {
         confirmMsg += `📍 <b>Recogida:</b> ${pending.origin}\n`;
         confirmMsg += `🏁 <b>Destino:</b> ${pending.destination}\n`;
         confirmMsg += `💰 <b>Tarifa:</b> $${(pending.price || 0).toLocaleString('es-CO')} COP\n\n`;
-        confirmMsg += `👉 <i>¿Cómo deseas pagar?</i>`;
+        confirmMsg += `👉 <i>¿Cómo deseas pagar? (Toca un botón o escríbeme: "efectivo" o "transferencia")</i>`;
 
         return safeReply(ctx, confirmMsg, Markup.inlineKeyboard([
           [Markup.button.callback('💵 Pagar en Efectivo', 'confirm_ride_cash')],
@@ -1972,7 +2040,7 @@ bot.on('text', async (ctx) => {
       confirmMsg += `🏁 <b>Destino:</b> ${pending.destination}\n`;
       confirmMsg += `💰 <b>Tarifa:</b> $${(pending.price || 3000).toLocaleString('es-CO')} COP\n`;
       confirmMsg += `⏱️ <b>Tiempo llegada:</b> 3 a 5 min\n\n`;
-      confirmMsg += `👉 <i>¿Cómo deseas pagar?</i>`;
+      confirmMsg += `👉 <i>¿Cómo deseas pagar? (Toca un botón o escríbeme: "efectivo" o "transferencia")</i>`;
 
       return safeReply(ctx, confirmMsg, Markup.inlineKeyboard([
         [Markup.button.callback('💵 En Efectivo', 'confirm_ride_cash')],
@@ -2001,7 +2069,7 @@ bot.on('text', async (ctx) => {
     }
   }
 
-  // 2. Procesamiento con IA Conversacional (Gemini Flash)
+  // 2. Procesamiento con IA Conversacional Híbrida (Gemini Flash + Botones Contextuales)
   await ctx.sendChatAction('typing').catch(e => console.error('Error typing:', e));
 
   session.history.push({ role: 'user', content: userMessage });
@@ -2016,18 +2084,18 @@ bot.on('text', async (ctx) => {
   }
 
   const promptAntiRobot = `
-REGLAS SUPREMAS DE ATENCIÓN Y PRECISIÓN:
-1. PREGUNTAS DE PRECISIÓN (OBLIGATORIO): Si el cliente pide productos de tienda o farmacia con variantes (gaseosas, cigarros, cervezas, pañales, medicinas, sabores de comida) y NO especificó marca, tamaño, sabor o presentación:
-   - FRENA de inmediato y haz 1 pregunta directa y corta antes de armar el ticket.
-   - Ejemplo: "¿De qué marca y tamaño la gaseosa? ¿Y los cigarros de qué marca y caja de 10 o 20?"
-2. SÉ ULTRA-CONCISO: Respuestas cortas, máximo 4 líneas o ticket resumido. CERO discursos ni frases de relleno.
-3. PROHIBIDO DAR DIRECCIONES O TELÉFONOS DE RESTAURANTES.
+REGLAS SUPREMAS DE ATENCIÓN HÍBRIDA (TEXTO + BOTONES):
+1. FLEXIBILIDAD TOTAL: Atiende tanto a clientes que escriben preguntas completas por texto como a los que usan botones.
+   - Si el cliente te pregunta precios, horarios, restaurantes, cómo pedir o cualquier duda, respóndele de forma amable, clara y directa.
+   - Si el cliente te da origen, destino y método de pago en un solo mensaje de texto (ej. "Mándame una moto de Villa Luz a la plaza y pago en efectivo"), toma los datos y crea el pedido directamente con <<<ORDER_CREATE:{...}>>>.
+2. PREGUNTAS DE PRECISIÓN: Si el cliente pide productos de tienda o farmacia con variantes (gaseosas, cigarros, cervezas, sabores) sin especificar:
+   - Haz 1 pregunta corta y directa antes de armar el ticket.
+3. SÉ CONCISO Y AMABLE: Respuestas cálidas con sabor guajiro de Fonseca ("¡Claro que sí!", "Con gusto te colaboro", "En un 2x3").
 4. TARIFAS OFICIALES:
-   - Domicilio 1 lugar: $3.000 COP | 2 lugares: $5.000 COP | 3 lugares: $8.000 COP.
-   - Mototaxi urbano: 1 pax $3.000 COP | 2 pax $4.000 COP.
-   - Intermunicipales: Distracción $5.000 (moto), Barrancas $8.000, San Juan $10.000, El Molino/Hatonuevo $15.000, Villanueva/Urumita $20.000, Maicao $30.000, Riohacha $40.000.
-5. CUANDO EL CLIENTE YA ESPECIFICÓ LOS PRODUCTOS Y ENVÍA DIRECCIÓN Y PAGO:
-   - Confirma con el ticket directo y crea el pedido.`;
+   - Mototaxi urbano: 1 persona $3.000 COP | 2 personas $4.000 COP.
+   - Domicilio compras/comida: $3.000 COP (1 lugar) | $5.000 COP (2 lugares).
+   - Intermunicipales: Distracción $5.000, Barrancas $8.000, San Juan $10.000, El Molino/Hatonuevo $15.000, Villanueva/Urumita $20.000, Maicao $30.000, Riohacha $40.000.
+5. PAGO BRE-B OFICIAL: Llave Bre-B alias @3506811888 (con @ obligatorio).`;
 
   const fullSystemPrompt = `${fonsiSoul}\n\n=== BASE DE DATOS EN VIVO ===\nComercios y menús actuales:\n${dbContext}\n\n${promptAntiRobot}`;
 
@@ -2071,6 +2139,7 @@ REGLAS SUPREMAS DE ATENCIÓN Y PRECISIÓN:
       let fonsiReply = response.choices?.[0]?.message?.content || '¡Claro que sí! Cuéntame qué necesitas y te lo soluciono en un 2x3 🛵';
 
       const orderTagMatch = fonsiReply.match(/<<<ORDER_CREATE:(.*?)>>>/s);
+      let orderSuccessButtons = null;
       if (orderTagMatch) {
         try {
           const orderJson = JSON.parse(orderTagMatch[1]);
@@ -2080,7 +2149,6 @@ REGLAS SUPREMAS DE ATENCIÓN Y PRECISIÓN:
           if (orderResult.success) {
             const trackingUrl = `http://89.117.72.233:3000/track/${orderResult.code}`;
             if (orderResult.paymentMethod === 'transfer') {
-              // Enviar datos de Llave y QR directamente
               await sendTransferPaymentInstructions(ctx, orderResult);
             } else {
               fonsiReply += `\n\n🛵 <b>¡Servicio Registrado!</b>\n`;
@@ -2091,6 +2159,11 @@ REGLAS SUPREMAS DE ATENCIÓN Y PRECISIÓN:
               fonsiReply += `📍 Total: <b>$${orderResult.total.toLocaleString('es-CO')} COP</b> (Efectivo contra entrega)\n`;
               fonsiReply += `🗺️ <b>Seguimiento:</b> <a href="${trackingUrl}">Ver Mototaxi en vivo</a>\n`;
               fonsiReply += `⚡ <i>¡Te lo llevamos en un 2x3!</i>`;
+              orderSuccessButtons = Markup.inlineKeyboard([
+                [Markup.button.url('🗺️ Ver Mototaxi en Vivo 📍', trackingUrl)],
+                [Markup.button.callback('📋 Consultar Mi Servicio', 'btn_status_quick')],
+                [Markup.button.callback('🛵 Menú Principal', 'btn_main_menu')]
+              ]);
             }
           }
         } catch (e) {
@@ -2100,9 +2173,15 @@ REGLAS SUPREMAS DE ATENCIÓN Y PRECISIÓN:
 
       session.history.push({ role: 'assistant', content: fonsiReply });
       
+      const smartButtons = orderSuccessButtons || getSmartContextButtons(fonsiReply, cleanText);
       const chunkSize = 4000;
       for (let i = 0; i < fonsiReply.length; i += chunkSize) {
-        await safeReply(ctx, fonsiReply.substring(i, i + chunkSize));
+        const isLastChunk = i + chunkSize >= fonsiReply.length;
+        if (isLastChunk) {
+          await safeReply(ctx, fonsiReply.substring(i, i + chunkSize), smartButtons);
+        } else {
+          await safeReply(ctx, fonsiReply.substring(i, i + chunkSize));
+        }
       }
       success = true;
 
@@ -2110,7 +2189,8 @@ REGLAS SUPREMAS DE ATENCIÓN Y PRECISIÓN:
       console.error(`[LLM ERROR]:`, error.message);
       retries++;
       if (retries >= 3) {
-        await safeReply(ctx, '¡Qué pena contigo! Tenemos muchos pedidos en fila. ¿Me dices si deseas transporte o comida de algún restaurante?');
+        const fallbackButtons = getSmartContextButtons('', cleanText);
+        await safeReply(ctx, '¡Qué pena contigo! Tenemos muchos pedidos en fila. ¿Me dices si deseas mototaxi, comida o viaje intermunicipal? Elige una opción abajo o escríbeme directamente:', fallbackButtons);
       } else {
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
