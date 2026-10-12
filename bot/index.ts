@@ -51,6 +51,29 @@ async function safeReply(ctx: any, text: string, extra?: any) {
   }
 }
 
+function startWaitFeedback(ctx: any, delayMs: number = 9000) {
+  let completed = false;
+  let ackPromise: Promise<any> | null = null;
+  const sendTyping = () => {
+    if (!completed) void ctx.sendChatAction('typing').catch(() => {});
+  };
+
+  sendTyping();
+  const typingTimer = setInterval(sendTyping, 4000);
+  const ackTimer = setTimeout(() => {
+    if (!completed) {
+      ackPromise = safeReply(ctx, 'Ya recibí tu mensaje, enseguida te ayudo.');
+    }
+  }, delayMs);
+
+  return async () => {
+    completed = true;
+    clearInterval(typingTimer);
+    clearTimeout(ackTimer);
+    if (ackPromise) await ackPromise;
+  };
+}
+
 // Lista de Telegram IDs de administradores para alertas y autorizaciones de seguridad
 const ADMIN_IDS = (process.env.ADMIN_TELEGRAM_IDS || process.env.ADMIN_CHAT_ID || '1326456073,6183371987,688849556').split(',').map(s => s.trim()).filter(Boolean);
 
@@ -121,6 +144,54 @@ function getSmartContextButtons(text: string, cleanText: string = '') {
     [Markup.button.callback('🚗 Viajes Intermunicipales', 'btn_intermunicipal'), Markup.button.url('🗺️ Radar GPS en Vivo', 'http://89.117.72.233:3000')],
     [Markup.button.callback('📱 Menú Principal', 'btn_main_menu')]
   ]);
+}
+
+// Transcripción Multimodal Universal de Notas de Voz y Audios con Gemini 2.5 Flash
+// Reconoce cualquier idioma, dialecto, acento regional, velocidad y modismo con fidelidad absoluta
+async function transcribeAudio(audioUrl: string): Promise<string> {
+  const apiKey = process.env.LLM_API_KEY;
+  if (!apiKey) return '';
+
+  try {
+    const audioRes = await fetch(audioUrl);
+    if (!audioRes.ok) return '';
+    const arrayBuffer = await audioRes.arrayBuffer();
+    const base64Data = Buffer.from(arrayBuffer).toString('base64');
+    let mimeType = audioRes.headers.get('content-type') || 'audio/ogg';
+    if (!mimeType || mimeType.includes('octet-stream')) mimeType = 'audio/ogg';
+
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [
+              {
+                inlineData: {
+                  mimeType: mimeType,
+                  data: base64Data
+                }
+              },
+              {
+                text: "Eres un transcriptor de audio universal de máxima precisión. Escucha atentamente la nota de voz y transcribe con EXACTITUD LITERAL todo lo que dice la persona. Reconoce cualquier idioma (español, inglés, wayuunaiki, portugués, francés, etc.), cualquier acento o dialecto regional (costeño, guajiro, paisa, rolo, valluno, santandereano, llanero, venezolano, extranjero, etc.), sin importar ruido de fondo, velocidad o modismos. Devuelve ÚNICAMENTE las palabras textuales exactas dichas por el usuario, sin agregar comentarios, saludos, explicaciones ni formato adicional."
+              }
+            ]
+          }
+        ],
+        generationConfig: {
+          temperature: 0.0
+        }
+      })
+    });
+
+    const json = await response.json();
+    const text = json.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    return text.replace(/```/g, '').trim();
+  } catch (err: any) {
+    console.error('Error transcribiendo audio con Gemini:', err.message);
+    return '';
+  }
 }
 
 // PostgreSQL Connection Pool (Resiliente a desconexiones y consultas concurrentes)
@@ -1895,10 +1966,9 @@ bot.command(['liquidar', 'cierre'], async (ctx) => {
 });
 
 // ==========================================
-// GESTOR DE MENSAJES DE TEXTO (FLUJOS + IA LLM)
+// PROCESADOR UNIFICADO (TEXTO + AUDIO NOTAS DE VOZ)
 // ==========================================
-bot.on('text', async (ctx) => {
-  const userMessage = ctx.message.text;
+async function processIncomingTextMessage(ctx: any, userMessage: string, isFromVoice: boolean = false, waitFeedbackAlreadyStarted: boolean = false) {
   const userId = ctx.from.id.toString();
   const userName = ctx.from.first_name || 'Cliente';
   
@@ -1909,7 +1979,7 @@ bot.on('text', async (ctx) => {
     return sendWelcome(ctx);
   }
 
-  console.log(`\n[TELEGRAM] Mensaje de ${userId} (${userName}): ${userMessage}`);
+  console.log(`\n[TELEGRAM${isFromVoice ? ' AUDIO' : ''}] Mensaje de ${userId} (${userName}): ${userMessage}`);
   const session = getOrCreateSession(userId);
 
   // 0. Flujo Interactivo de Registro de Conductor (driverReg)
@@ -2070,7 +2140,7 @@ bot.on('text', async (ctx) => {
   }
 
   // 2. Procesamiento con IA Conversacional Híbrida (Gemini Flash + Botones Contextuales)
-  await ctx.sendChatAction('typing').catch(e => console.error('Error typing:', e));
+  const stopWaitFeedback = waitFeedbackAlreadyStarted ? async () => {} : startWaitFeedback(ctx);
 
   session.history.push({ role: 'user', content: userMessage });
   if (session.history.length > 8) session.history.splice(0, session.history.length - 8);
@@ -2084,18 +2154,25 @@ bot.on('text', async (ctx) => {
   }
 
   const promptAntiRobot = `
-REGLAS SUPREMAS DE ATENCIÓN HÍBRIDA (TEXTO + BOTONES):
-1. FLEXIBILIDAD TOTAL: Atiende tanto a clientes que escriben preguntas completas por texto como a los que usan botones.
-   - Si el cliente te pregunta precios, horarios, restaurantes, cómo pedir o cualquier duda, respóndele de forma amable, clara y directa.
-   - Si el cliente te da origen, destino y método de pago en un solo mensaje de texto (ej. "Mándame una moto de Villa Luz a la plaza y pago en efectivo"), toma los datos y crea el pedido directamente con <<<ORDER_CREATE:{...}>>>.
-2. PREGUNTAS DE PRECISIÓN: Si el cliente pide productos de tienda o farmacia con variantes (gaseosas, cigarros, cervezas, sabores) sin especificar:
-   - Haz 1 pregunta corta y directa antes de armar el ticket.
-3. SÉ CONCISO Y AMABLE: Respuestas cálidas con sabor guajiro de Fonseca ("¡Claro que sí!", "Con gusto te colaboro", "En un 2x3").
-4. TARIFAS OFICIALES:
-   - Mototaxi urbano: 1 persona $3.000 COP | 2 personas $4.000 COP.
-   - Domicilio compras/comida: $3.000 COP (1 lugar) | $5.000 COP (2 lugares).
-   - Intermunicipales: Distracción $5.000, Barrancas $8.000, San Juan $10.000, El Molino/Hatonuevo $15.000, Villanueva/Urumita $20.000, Maicao $30.000, Riohacha $40.000.
-5. PAGO BRE-B OFICIAL: Llave Bre-B alias @3506811888 (con @ obligatorio).`;
+REGLAS SUPREMAS DE ATENCIÓN UNIVERSAL (TEXTO, AUDIO, MULTI-IDIOMA Y BOTONES):
+1. ATENCIÓN MULTIMODAL Y MULTILINGÜE UNIVERSAL:
+   - El usuario puede comunicarse por notas de voz (audio) o texto en CUALQUIER idioma o dialecto (español costeño, guajiro, paisa, rolo, wayuunaiki, inglés, portugués, francés, etc.).
+   - Entiende a la perfección cualquier acento, jerga o modismo. Responde siempre en el idioma que use el cliente con calidez, respeto y máxima claridad.
+2. COBERTURA TOTAL DE SERVICIOS (EN UN 2X3):
+   - 🛵 MOTOTAXI URBANO: 1 pasajero ($3.000 COP) | 2 pasajeros ($4.000 COP).
+   - 🍔 RESTAURANTES Y COMIDAS: Domicilio de restaurantes aliados o cualquier sitio de comidas ($3.000 COP 1 parada | $5.000 COP 2 paradas).
+   - 🛒 MANDADOS, TIENDAS Y FARMACIAS: Compras de víveres, licores, cigarrillos, medicinas ($3.000 COP 1 parada | $5.000 COP 2 paradas).
+   - 📦 ENCOMIENDAS Y MENSAJERÍA: Envíos de sobres, paquetes, llaves, documentos punto a punto ($3.000 COP urbano).
+   - 🛍️ RECLAMO DE PAQUETES TEMU / SHEIN / MERCADOLIBRE: Recogida en casa aliada/oficina y entrega en la puerta de la casa ($3.000 a $5.000 COP).
+   - 🚗 VIAJES INTERMUNICIPALES: Distracción ($5.000), Barrancas ($8.000), San Juan ($10.000), El Molino/Hatonuevo ($15.000), Villanueva/Urumita ($20.000), Maicao ($30.000), Riohacha ($40.000). (Disponible en moto o carro).
+3. PROTOCOLO CERO ERRORES (CREACIÓN AUTOMÁTICA O 1 PREGUNTA):
+   - Si el cliente te da origen, destino y método de pago (ej. "Mándame una moto de Villa Luz a la plaza y pago en efectivo" o "I need a ride from center to Villa Luz cash"), procesa de inmediato y añade el tag:
+     <<<ORDER_CREATE:{"type":"ride"|"food"|"package"|"delivery","vehicle":"moto"|"carro","origin":"...","destination":"...","items":[{"item":"...","qty":1,"price":3000}],"subtotal":3000,"delivery_fee":0,"total":3000,"payment_method":"cash"|"transfer"}>>>
+   - Si falta algún dato indispensable (ej. de dónde lo recogen o cómo paga), haz exactamente 1 pregunta breve y amigable para completar el servicio.
+   - Si pide productos con variantes (marca de gaseosa, tamaño, marca de cigarrillos), pregunta la variante en 1 sola línea directa.
+4. MÉTODOS DE PAGO:
+   - Efectivo: Se paga contra entrega.
+   - Transferencia / Llave Bre-B: Alias universal obligatorio: @3506811888 (con el @ obligatorio).`;
 
   const fullSystemPrompt = `${fonsiSoul}\n\n=== BASE DE DATOS EN VIVO ===\nComercios y menús actuales:\n${dbContext}\n\n${promptAntiRobot}`;
 
@@ -2190,11 +2267,55 @@ REGLAS SUPREMAS DE ATENCIÓN HÍBRIDA (TEXTO + BOTONES):
       retries++;
       if (retries >= 3) {
         const fallbackButtons = getSmartContextButtons('', cleanText);
-        await safeReply(ctx, '¡Qué pena contigo! Tenemos muchos pedidos en fila. ¿Me dices si deseas mototaxi, comida o viaje intermunicipal? Elige una opción abajo o escríbeme directamente:', fallbackButtons);
+        await safeReply(ctx, 'Sigo aquí para ayudarte. ¿Me repites qué necesitas, por favor?', fallbackButtons);
       } else {
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        const retryDelay = Math.min(1000 * (2 ** (retries - 1)), 8000);
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
       }
     }
+  }
+  await stopWaitFeedback();
+}
+
+bot.on('text', async (ctx) => {
+  const userMessage = ctx.message.text;
+  await processIncomingTextMessage(ctx, userMessage, false);
+});
+
+// ==========================================
+// GESTOR DE NOTAS DE VOZ Y AUDIOS (IA TRANSCRIPCIÓN + PROCESAMIENTO)
+// ==========================================
+bot.on(['voice', 'audio'], async (ctx) => {
+  const userId = ctx.from.id.toString();
+  const stopWaitFeedback = startWaitFeedback(ctx);
+
+  try {
+    const voice = (ctx.message as any).voice || (ctx.message as any).audio;
+    if (!voice) {
+      return safeReply(ctx, '🎤 No se pudo procesar el archivo de audio.');
+    }
+
+    const fileLink = await ctx.telegram.getFileLink(voice.file_id);
+    const audioUrl = fileLink.href;
+
+    const transcription = await transcribeAudio(audioUrl);
+
+    if (!transcription || transcription.trim().length === 0) {
+      return safeReply(
+        ctx,
+        '🎤 No alcancé a entender con claridad tu audio. ¿Podrías repetirme o escribirlo en el chat?',
+        getSmartContextButtons('', '')
+      );
+    }
+
+    console.log(`\n[TELEGRAM AUDIO] Transcripción de ${userId}: "${transcription}"`);
+
+    await processIncomingTextMessage(ctx, transcription, true, true);
+  } catch (err: any) {
+    console.error('Error procesando nota de voz:', err);
+    await safeReply(ctx, 'Sigo aquí para ayudarte. ¿Me escribes lo que necesitas, por favor?', getSmartContextButtons('', ''));
+  } finally {
+    await stopWaitFeedback();
   }
 });
 
