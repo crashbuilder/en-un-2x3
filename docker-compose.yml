@@ -1,12 +1,13 @@
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: fonsi_user
       POSTGRES_PASSWORD: fonsi_password
       POSTGRES_DB: en_un_2x3
     ports:
-      - "5435:5432"
+      - "127.0.0.1:5435:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./db:/docker-entrypoint-initdb.d
@@ -18,13 +19,15 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redisdata:/data
     command: redis-server --appendonly yes
 
   openclaw:
+    restart: unless-stopped
     build:
       context: ./bot
       dockerfile: Dockerfile
@@ -53,6 +56,7 @@ services:
         condition: service_started
 
   dashboard:
+    restart: unless-stopped
     build:
       context: ./dashboard
       dockerfile: Dockerfile

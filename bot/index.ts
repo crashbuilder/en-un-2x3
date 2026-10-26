@@ -51,29 +51,6 @@ async function safeReply(ctx: any, text: string, extra?: any) {
   }
 }
 
-function startWaitFeedback(ctx: any, delayMs: number = 9000) {
-  let completed = false;
-  let ackPromise: Promise<any> | null = null;
-  const sendTyping = () => {
-    if (!completed) void ctx.sendChatAction('typing').catch(() => {});
-  };
-
-  sendTyping();
-  const typingTimer = setInterval(sendTyping, 4000);
-  const ackTimer = setTimeout(() => {
-    if (!completed) {
-      ackPromise = safeReply(ctx, 'Ya recibí tu mensaje, enseguida te ayudo.');
-    }
-  }, delayMs);
-
-  return async () => {
-    completed = true;
-    clearInterval(typingTimer);
-    clearTimeout(ackTimer);
-    if (ackPromise) await ackPromise;
-  };
-}
-
 // Lista de Telegram IDs de administradores para alertas y autorizaciones de seguridad
 const ADMIN_IDS = (process.env.ADMIN_TELEGRAM_IDS || process.env.ADMIN_CHAT_ID || '1326456073,6183371987,688849556').split(',').map(s => s.trim()).filter(Boolean);
 
@@ -94,6 +71,15 @@ async function notifyAdmins(text: string, extra?: any) {
 function getSmartContextButtons(text: string, cleanText: string = '') {
   const t = (cleanText + ' ' + (text || '').toLowerCase()).normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   
+  // 0. Preguntas y Opciones de Pago (Prioridad Alta)
+  if (/(como deseas pagar|metodo de pago|pagas|pagar|efectivo|transferencia|bre-b|nequi)/i.test(t) && /(pag|efectivo|transfer|bre)/i.test(t)) {
+    return Markup.inlineKeyboard([
+      [Markup.button.callback('💵 Pagar en Efectivo', 'confirm_ride_cash')],
+      [Markup.button.callback('📱 Pagar con Bre-B (@3506811888)', 'confirm_ride_transfer')],
+      [Markup.button.callback('❌ Cancelar', 'cancel_action')]
+    ]);
+  }
+
   // 1. Mototaxi / Carrera / Transporte urbano
   if (/moto|mototaxi|carrera|pasajero|transporte|recog|viaje urbano|primero de julio|villa luz|san agustin/i.test(t)) {
     return Markup.inlineKeyboard([
@@ -148,7 +134,7 @@ function getSmartContextButtons(text: string, cleanText: string = '') {
 
 // Transcripción Multimodal Universal de Notas de Voz y Audios con Gemini 2.5 Flash
 // Reconoce cualquier idioma, dialecto, acento regional, velocidad y modismo con fidelidad absoluta
-async function transcribeAudio(audioUrl: string): Promise<string> {
+async function transcribeAudio(audioUrl: string, originalMime?: string): Promise<string> {
   const apiKey = process.env.LLM_API_KEY;
   if (!apiKey) return '';
 
@@ -157,8 +143,18 @@ async function transcribeAudio(audioUrl: string): Promise<string> {
     if (!audioRes.ok) return '';
     const arrayBuffer = await audioRes.arrayBuffer();
     const base64Data = Buffer.from(arrayBuffer).toString('base64');
-    let mimeType = audioRes.headers.get('content-type') || 'audio/ogg';
-    if (!mimeType || mimeType.includes('octet-stream')) mimeType = 'audio/ogg';
+    
+    // Normalización de formato de audio para máxima compatibilidad con Gemini
+    let mimeType = originalMime || audioRes.headers.get('content-type') || 'audio/ogg';
+    if (mimeType.includes('octet-stream') || mimeType.includes('oga') || mimeType.includes('opus')) {
+      mimeType = 'audio/ogg';
+    } else if (mimeType.includes('mp3') || mimeType.includes('mpeg')) {
+      mimeType = 'audio/mp3';
+    } else if (mimeType.includes('wav')) {
+      mimeType = 'audio/wav';
+    } else if (mimeType.includes('m4a') || mimeType.includes('aac')) {
+      mimeType = 'audio/aac';
+    }
 
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
       method: 'POST',
@@ -174,20 +170,28 @@ async function transcribeAudio(audioUrl: string): Promise<string> {
                 }
               },
               {
-                text: "Eres un transcriptor de audio universal de máxima precisión. Escucha atentamente la nota de voz y transcribe con EXACTITUD LITERAL todo lo que dice la persona. Reconoce cualquier idioma (español, inglés, wayuunaiki, portugués, francés, etc.), cualquier acento o dialecto regional (costeño, guajiro, paisa, rolo, valluno, santandereano, llanero, venezolano, extranjero, etc.), sin importar ruido de fondo, velocidad o modismos. Devuelve ÚNICAMENTE las palabras textuales exactas dichas por el usuario, sin agregar comentarios, saludos, explicaciones ni formato adicional."
+                text: "Eres un transcriptor e intérprete de audio inteligente de alta fidelidad para el servicio 'En un 2x3' en Fonseca, La Guajira, Colombia.\n\nPAUTAS DE TRANSCRIPCIÓN E INTERPRETACIÓN PRECISA:\n1. SEPARACIÓN Y COHERENCIA DE PALABRAS: Transcribe en español colombiano claro y coherente lo que la persona realmente dice. Separa adecuadamente palabras que se pronuncien pegadas por rapidez o fonética costeña (ejemplo clave: 'de Maye sería' NUNCA lo unas como 'mayesería', reconócelo siempre como 'de Maye sería' o 'de Restaurante Maye').\n2. COMERCIOS Y RESTAURANTES LOCALES DE FONSECA: Conoce los comercios y restaurantes aliados: Restaurante Maye (almuerzos corrientes y platos típicos), Don Jediondo, La Fogata, Asadero El Paisa, La Jefa, Loquillo, Doria, droguerías, tiendas y panaderías.\n3. BARRIOS Y PUNTOS CLAVE: Primero de Julio, Villa Luz, San Agustín, Cerrejón, 12 de Octubre, Brisas del Ranchería, La Floresta, Plaza Central, Mercado Público, Hospital San Agustín, Terminal de Transportes, La Bomba, Distracción, San Juan del Cesar, Barrancas, etc.\n4. LIMPIEZA DE TARTAMUDEOS Y MULETILLAS: Omite tropiezos de voz o repeticiones innecesarias (ejemplo: si el audio dice 'este... que tenga, que tenga los menús que tenga de almuerzo corriente', transcribe limpio: 'los menús que tenga de almuerzo corriente').\n5. CERO TEXTO EXTRA: Devuelve ÚNICAMENTE el texto limpio de lo que el cliente solicita o pregunta. Prohibido agregar introducciones, comentarios, explicaciones, prefijos ni comillas."
               }
             ]
           }
         ],
         generationConfig: {
-          temperature: 0.0
+          temperature: 0.1
         }
       })
     });
 
     const json = await response.json();
-    const text = json.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    return text.replace(/```/g, '').trim();
+    if (!response.ok || json.error) {
+      console.error('Error de API Gemini al transcribir audio:', json.error || response.statusText);
+      return '';
+    }
+
+    let text = json.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    text = text.replace(/```/g, '').trim();
+    text = text.replace(/^(transcripci[oó]n(\s*literal)?|audio\s*transcrito|el\s*usuario\s*dice|lo\s*que\s*dice\s*el\s*audio)\s*:\s*/i, '');
+    text = text.replace(/^["'«»“](.*)["'«»”]$/s, '$1').trim();
+    return text;
   } catch (err: any) {
     console.error('Error transcribiendo audio con Gemini:', err.message);
     return '';
@@ -449,14 +453,33 @@ async function processOrderCreation(userId: string, userName: string, orderData:
     const createdOrder = orderRes.rows[0];
 
     const isCarOrder = orderData.vehicle === 'carro' || orderType === 'carro';
+    
+    // Despacho inteligente con sesgo dinámico por turnos (Diurnos vs Nocturnos)
+    // Aplica tanto a DOMICILIOS de comida/tiendas como a CARRERAS de mototaxis/viajes
+    const shiftPriorityOrder = `
+      ORDER BY 
+        CASE 
+          -- Ventana de solape (5:00 PM a 8:00 PM): Sesgo prioritario a trabajadores nocturnos (frescos)
+          WHEN EXTRACT(HOUR FROM now() AT TIME ZONE 'America/Bogota') BETWEEN 17 AND 20 
+               THEN CASE WHEN shift_type = 'nocturno' THEN 1 ELSE 2 END
+          -- Noche pura (8:00 PM a 5:59 AM): Nocturnos primero
+          WHEN EXTRACT(HOUR FROM now() AT TIME ZONE 'America/Bogota') >= 20 OR EXTRACT(HOUR FROM now() AT TIME ZONE 'America/Bogota') < 6 
+               THEN CASE WHEN shift_type = 'nocturno' THEN 1 ELSE 2 END
+          -- Día (6:00 AM a 4:59 PM): Diurnos primero
+          ELSE CASE WHEN shift_type = 'diurno' THEN 1 ELSE 2 END
+        END ASC,
+        RANDOM()
+      LIMIT 1
+    `;
+
     const courierQuery = isCarOrder
-      ? "SELECT id, name, wa_phone, vehicle, vehicle_model, color, plate, rating, vehicle_type, current_lat, current_lng FROM couriers WHERE is_active = true AND vehicle_type = 'carro' ORDER BY RANDOM() LIMIT 1"
-      : "SELECT id, name, wa_phone, vehicle, vehicle_model, color, plate, rating, vehicle_type, current_lat, current_lng FROM couriers WHERE is_active = true ORDER BY RANDOM() LIMIT 1";
+      ? `SELECT id, name, wa_phone, vehicle, vehicle_model, color, plate, rating, vehicle_type, current_lat, current_lng, shift_type FROM couriers WHERE is_active = true AND vehicle_type = 'carro' ${shiftPriorityOrder}`
+      : `SELECT id, name, wa_phone, vehicle, vehicle_model, color, plate, rating, vehicle_type, current_lat, current_lng, shift_type FROM couriers WHERE is_active = true ${shiftPriorityOrder}`;
 
     let courierRes = await dbClient.query(courierQuery);
     if (courierRes.rows.length === 0) {
       courierRes = await dbClient.query(
-        "SELECT id, name, wa_phone, vehicle, vehicle_model, color, plate, rating, vehicle_type, current_lat, current_lng FROM couriers WHERE is_active = true ORDER BY RANDOM() LIMIT 1"
+        "SELECT id, name, wa_phone, vehicle, vehicle_model, color, plate, rating, vehicle_type, current_lat, current_lng, shift_type FROM couriers WHERE is_active = true ORDER BY RANDOM() LIMIT 1"
       );
     }
 
@@ -715,6 +738,8 @@ async function showCourierPanel(ctx: any, userId: string) {
     msg += `${isCar ? '🚗' : '🏍️'} <b>Vehículo:</b> ${courier.vehicle_model || courier.vehicle} (${courier.color || 'Blanco'})\n`;
     msg += `🏷️ <b>Placa:</b> <code>${courier.plate || '-'}</code>\n`;
     msg += `⭐ <b>Calificación:</b> ${courier.rating || '5.0'} ⭐\n`;
+    const currentShift = courier.shift_type === 'nocturno' ? '🌙 Nocturno (Noche)' : '☀️ Diurno (Día)';
+    msg += `🕒 <b>Turno Asignado:</b> ${currentShift}\n`;
     msg += `📡 <b>Estado Turno:</b> ${courier.is_active ? '🟢 <b>EN TURNO (ACTIVO)</b>' : '🔴 <b>FUERA DE TURNO (INACTIVO)</b>'}\n\n`;
 
     if (activeOrderRes.rows.length > 0) {
@@ -743,8 +768,16 @@ async function showCourierPanel(ctx: any, userId: string) {
 
     if (courier.is_active) {
       buttons.push([Markup.button.callback('🔴 Pausar Turno (Desactivarme)', `courier_toggle_shift_${courier.id}_off`)]);
+      if (courier.shift_type === 'nocturno') {
+        buttons.push([Markup.button.callback('☀️ Cambiar a Turno Diurno', `courier_shift_set_${courier.id}_diurno`)]);
+      } else {
+        buttons.push([Markup.button.callback('🌙 Cambiar a Turno Nocturno', `courier_shift_set_${courier.id}_nocturno`)]);
+      }
     } else {
-      buttons.push([Markup.button.callback('🟢 Iniciar Turno (Activarme)', `courier_toggle_shift_${courier.id}_on`)]);
+      buttons.push([
+        Markup.button.callback('☀️ Iniciar Turno Diurno', `courier_shift_set_${courier.id}_diurno`),
+        Markup.button.callback('🌙 Iniciar Turno Nocturno', `courier_shift_set_${courier.id}_nocturno`)
+      ]);
     }
 
     buttons.push([Markup.button.callback('💰 Mi Liquidación y Ganancias de Hoy', `courier_my_earnings_${courier.id}`)]);
@@ -1077,6 +1110,29 @@ bot.action(/^bind_courier_(.+)$/, async (ctx) => {
   }
 });
 
+// Establecer Turno (Diurno / Nocturno) y Activar Conductor
+bot.action(/^courier_shift_set_(.+)_(diurno|nocturno)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const courierId = ctx.match[1];
+  const newShift = ctx.match[2];
+  const userId = ctx.from.id.toString();
+
+  try {
+    const courierCheck = await dbClient.query("SELECT * FROM couriers WHERE id = $1", [courierId]);
+    if (courierCheck.rows.length > 0 && !courierCheck.rows[0].is_verified) {
+      return safeReply(ctx, '⏳ Tu cuenta aún está pendiente de aprobación por la administración de En un 2x3.');
+    }
+
+    await dbClient.query(
+      "UPDATE couriers SET is_active = true, shift_type = $1, location_updated_at = now() WHERE id = $2", 
+      [newShift, courierId]
+    );
+    await showCourierPanel(ctx, userId);
+  } catch (e: any) {
+    await safeReply(ctx, 'Error al activar turno seleccionado.');
+  }
+});
+
 // Activar/Desactivar Turno (Con validación de verificación)
 bot.action(/^courier_toggle_shift_(.+)_(on|off)$/, async (ctx) => {
   await ctx.answerCbQuery();
@@ -1361,7 +1417,7 @@ bot.action('confirm_ride_cash', async (ctx) => {
   const session = getOrCreateSession(userId);
 
   if (!session.pendingAction) {
-    return safeReply(ctx, 'No hay ningún servicio pendiente.');
+    return await processIncomingTextMessage(ctx, 'Pagaré en efectivo', false);
   }
 
   const pending = session.pendingAction;
@@ -1452,7 +1508,7 @@ bot.action('confirm_ride_transfer', async (ctx) => {
   const session = getOrCreateSession(userId);
 
   if (!session.pendingAction) {
-    return safeReply(ctx, 'No hay ninguna orden pendiente.');
+    return await processIncomingTextMessage(ctx, 'Pagaré por transferencia Bre-B', false);
   }
 
   const pending = session.pendingAction;
@@ -1968,7 +2024,7 @@ bot.command(['liquidar', 'cierre'], async (ctx) => {
 // ==========================================
 // PROCESADOR UNIFICADO (TEXTO + AUDIO NOTAS DE VOZ)
 // ==========================================
-async function processIncomingTextMessage(ctx: any, userMessage: string, isFromVoice: boolean = false, waitFeedbackAlreadyStarted: boolean = false) {
+async function processIncomingTextMessage(ctx: any, userMessage: string, isFromVoice: boolean = false) {
   const userId = ctx.from.id.toString();
   const userName = ctx.from.first_name || 'Cliente';
   
@@ -2140,9 +2196,9 @@ async function processIncomingTextMessage(ctx: any, userMessage: string, isFromV
   }
 
   // 2. Procesamiento con IA Conversacional Híbrida (Gemini Flash + Botones Contextuales)
-  const stopWaitFeedback = waitFeedbackAlreadyStarted ? async () => {} : startWaitFeedback(ctx);
+  await ctx.sendChatAction('typing').catch(e => console.error('Error typing:', e));
 
-  session.history.push({ role: 'user', content: userMessage });
+  session.history.push({ role: 'user', content: isFromVoice ? `[Nota de voz del cliente]: "${userMessage}"` : userMessage });
   if (session.history.length > 8) session.history.splice(0, session.history.length - 8);
 
   let dbContext = "Catálogo general";
@@ -2157,7 +2213,8 @@ async function processIncomingTextMessage(ctx: any, userMessage: string, isFromV
 REGLAS SUPREMAS DE ATENCIÓN UNIVERSAL (TEXTO, AUDIO, MULTI-IDIOMA Y BOTONES):
 1. ATENCIÓN MULTIMODAL Y MULTILINGÜE UNIVERSAL:
    - El usuario puede comunicarse por notas de voz (audio) o texto en CUALQUIER idioma o dialecto (español costeño, guajiro, paisa, rolo, wayuunaiki, inglés, portugués, francés, etc.).
-   - Entiende a la perfección cualquier acento, jerga o modismo. Responde siempre en el idioma que use el cliente con calidez, respeto y máxima claridad.
+   - Cuando veas [Nota de voz del cliente]: el usuario habló en audio natural. Puede incluir modismos ("ey compa", "mira ve", "hazme un favor", "carrera"), titubeos o correcciones sobre la marcha ("para la calle 15... digo para la 18"). Toma siempre la última indicación corregida como la válida.
+   - Responde siempre en el idioma que use el cliente con calidez, respeto, precisión y sin rodeos.
 2. COBERTURA TOTAL DE SERVICIOS (EN UN 2X3):
    - 🛵 MOTOTAXI URBANO: 1 pasajero ($3.000 COP) | 2 pasajeros ($4.000 COP).
    - 🍔 RESTAURANTES Y COMIDAS: Domicilio de restaurantes aliados o cualquier sitio de comidas ($3.000 COP 1 parada | $5.000 COP 2 paradas).
@@ -2165,11 +2222,15 @@ REGLAS SUPREMAS DE ATENCIÓN UNIVERSAL (TEXTO, AUDIO, MULTI-IDIOMA Y BOTONES):
    - 📦 ENCOMIENDAS Y MENSAJERÍA: Envíos de sobres, paquetes, llaves, documentos punto a punto ($3.000 COP urbano).
    - 🛍️ RECLAMO DE PAQUETES TEMU / SHEIN / MERCADOLIBRE: Recogida en casa aliada/oficina y entrega en la puerta de la casa ($3.000 a $5.000 COP).
    - 🚗 VIAJES INTERMUNICIPALES: Distracción ($5.000), Barrancas ($8.000), San Juan ($10.000), El Molino/Hatonuevo ($15.000), Villanueva/Urumita ($20.000), Maicao ($30.000), Riohacha ($40.000). (Disponible en moto o carro).
-3. PROTOCOLO CERO ERRORES (CREACIÓN AUTOMÁTICA O 1 PREGUNTA):
-   - Si el cliente te da origen, destino y método de pago (ej. "Mándame una moto de Villa Luz a la plaza y pago en efectivo" o "I need a ride from center to Villa Luz cash"), procesa de inmediato y añade el tag:
-     <<<ORDER_CREATE:{"type":"ride"|"food"|"package"|"delivery","vehicle":"moto"|"carro","origin":"...","destination":"...","items":[{"item":"...","qty":1,"price":3000}],"subtotal":3000,"delivery_fee":0,"total":3000,"payment_method":"cash"|"transfer"}>>>
-   - Si falta algún dato indispensable (ej. de dónde lo recogen o cómo paga), haz exactamente 1 pregunta breve y amigable para completar el servicio.
-   - Si pide productos con variantes (marca de gaseosa, tamaño, marca de cigarrillos), pregunta la variante en 1 sola línea directa.
+3. PROTOCOLO CERO ERRORES Y FILTRADO DE RUIDO CALLEJERO / MOTOS:
+   - Los audios provienen frecuentemente de mototaxistas en marcha o personas en la calle con ruido de motor, viento o pitos:
+     a) SI LOS DATOS ESENCIALES ESTÁN CLAROS (Origen, Destino y Pago): Procesa y crea el pedido de inmediato con <<<ORDER_CREATE:{...}>>>.
+     b) SI EL RUIDO TAPÓ UN DATO CRUCIAL O DICE '[inaudible]' (ej. no se entiende con certeza la dirección o el producto pedido):
+        ¡NUNCA INVENTES UN PEDIDO A CIEGAS! En un solo renglón confirma con calidez guajira:
+        "Compa, por el ruido de la calle/moto alcancé a escuchar que vas para [Destino escuchado]. ¿Me confirmas exactamente desde dónde te recogemos?"
+     c) SI ESTÁN CLAROS ORIGEN Y DESTINO PERO FALTA EL MÉTODO DE PAGO: Pregunta amablemente cómo desea pagar (el sistema le adjunta automáticamente los botones de 1 toque de Efectivo / Bre-B).
+     d) Si pide productos con variantes (marca de gaseosa, tamaño, marca de cigarrillos), pregunta la variante en 1 sola línea directa.
+     e) NUNCA crees pedidos con direcciones incompletas o inventadas.
 4. MÉTODOS DE PAGO:
    - Efectivo: Se paga contra entrega.
    - Transferencia / Llave Bre-B: Alias universal obligatorio: @3506811888 (con el @ obligatorio).`;
@@ -2267,14 +2328,12 @@ REGLAS SUPREMAS DE ATENCIÓN UNIVERSAL (TEXTO, AUDIO, MULTI-IDIOMA Y BOTONES):
       retries++;
       if (retries >= 3) {
         const fallbackButtons = getSmartContextButtons('', cleanText);
-        await safeReply(ctx, 'Sigo aquí para ayudarte. ¿Me repites qué necesitas, por favor?', fallbackButtons);
+        await safeReply(ctx, '¡Qué pena contigo! Tenemos muchos pedidos en fila. ¿Me dices si deseas mototaxi, comida o viaje intermunicipal? Elige una opción abajo o escríbeme directamente:', fallbackButtons);
       } else {
-        const retryDelay = Math.min(1000 * (2 ** (retries - 1)), 8000);
-        await new Promise(resolve => setTimeout(resolve, retryDelay));
+        await new Promise(resolve => setTimeout(resolve, 1000));
       }
     }
   }
-  await stopWaitFeedback();
 }
 
 bot.on('text', async (ctx) => {
@@ -2287,7 +2346,7 @@ bot.on('text', async (ctx) => {
 // ==========================================
 bot.on(['voice', 'audio'], async (ctx) => {
   const userId = ctx.from.id.toString();
-  const stopWaitFeedback = startWaitFeedback(ctx);
+  await ctx.sendChatAction('typing').catch(e => console.error(e));
 
   try {
     const voice = (ctx.message as any).voice || (ctx.message as any).audio;
@@ -2298,24 +2357,23 @@ bot.on(['voice', 'audio'], async (ctx) => {
     const fileLink = await ctx.telegram.getFileLink(voice.file_id);
     const audioUrl = fileLink.href;
 
-    const transcription = await transcribeAudio(audioUrl);
+    const transcription = await transcribeAudio(audioUrl, voice.mime_type);
 
     if (!transcription || transcription.trim().length === 0) {
       return safeReply(
         ctx,
-        '🎤 No alcancé a entender con claridad tu audio. ¿Podrías repetirme o escribirlo en el chat?',
+        '🎤 No alcancé a entender con claridad tu audio. ¿Podrías repetírmelo o escribírmelo?',
         getSmartContextButtons('', '')
       );
     }
 
-    console.log(`\n[TELEGRAM AUDIO] Transcripción de ${userId}: "${transcription}"`);
+    console.log(`\n[TELEGRAM AUDIO PROCESADO] Mensaje de ${userId}: "${transcription}"`);
 
-    await processIncomingTextMessage(ctx, transcription, true, true);
+    // Responde directamente con la solución sin burbujas intermedias de "Escuché: ..."
+    await processIncomingTextMessage(ctx, transcription, true);
   } catch (err: any) {
     console.error('Error procesando nota de voz:', err);
-    await safeReply(ctx, 'Sigo aquí para ayudarte. ¿Me escribes lo que necesitas, por favor?', getSmartContextButtons('', ''));
-  } finally {
-    await stopWaitFeedback();
+    await safeReply(ctx, 'Tuvimos un inconveniente al procesar tu nota de voz. Por favor escríbeme lo que necesitas.', getSmartContextButtons('', ''));
   }
 });
 

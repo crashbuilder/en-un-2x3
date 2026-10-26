@@ -21,3 +21,13 @@ redis_data/
 Thumbs.db
 .vscode/
 .idea/
+backups/
+*.bak*
+trainer-recibos/config.json
+trainer-recibos/recibos_para_entrenar/*
+trainer-recibos/recibos_procesados/*
+bot/test_*.js
+test_*.js
+trainer-recibos/config.json
+bot/list_models.js
+bot/get_bot_info.js

@@ -1,0 +1,223 @@
+{
+  "proyecto": {
+    "nombre": "En un 2x3",
+    "descripcion": "Plataforma integral, autónoma y chatbot de mensajería, domicilios, mandados, transporte de personas y comercio local con IA",
+    "ubicacion": "Fonseca, La Guajira, Colombia",
+    "nombre_bot": "Fonsi",
+    "slogan": "¿Qué deseas? Te lo llevo en un 2x3",
+    "moneda_principal": "COP",
+    "soporte_multimoneda": ["COP", "USD"],
+    "version": "2.1.0",
+    "fecha_actualizacion": "2026-09-24",
+    "vps_ip": "89.117.72.233",
+    "plataforma_web_unificada": "http://89.117.72.233:3000",
+    "rastreo_clientes_url": "http://89.117.72.233:3000/track/FX-XXXX",
+    "bot_telegram": "@Fonsi2x3_bot",
+    "llave_bre_b": "@3506811888",
+    "titular_pago": "En un 2x3 Fonseca"
+  },
+  "stack_tecnologico": {
+    "backend_bot_y_web": "Node.js 20+ con TypeScript, Telegraf y SPA Unificada en puerto 3000",
+    "ia_core": "Google Gemini 2.5 Flash con Vision OCR Multimodal",
+    "base_de_datos": "PostgreSQL 16 Relacional con partida doble contable",
+    "cache_y_sesiones": "Redis 7 Alpine",
+    "analitica_bi": "Chart.js interactivo integrado en plataforma web :3000",
+    "rastreo_gps": "Leaflet.js + OpenStreetMap con transmisión en vivo vía Telegram Live Location",
+    "pagos_digitales": "Llave Universal Bre-B (@3506811888) + QR dinámico interoperable",
+    "watchdog_resiliencia": "Recuperador periódico automático de pedidos retrasados cada 5 min",
+    "despliegue": "Ubuntu 24.04 LTS en VPS (89.117.72.233) con Docker Compose"
+  },
+  "tarifas_y_reglas_negocio": {
+    "mototaxi_urbano": {
+      "1_pasajero": 3000,
+      "2_pasajeros": 4000
+    },
+    "domicilios_y_compras": {
+      "1_parada": 3000,
+      "2_paradas": 5000,
+      "3_paradas": 8000
+    },
+    "rutas_intermunicipales": {
+      "distraccion": 5000,
+      "barrancas": 8000,
+      "san_juan_del_cesar": 10000,
+      "el_molino": 15000,
+      "hatonuevo": 15000,
+      "villanueva": 20000,
+      "urumita": 20000,
+      "maicao": 30000,
+      "riohacha": 40000
+    },
+    "planes_publicidad": {
+      "bronce": { "precio": 50000, "duracion_dias": 7, "menciones_estados": 3 },
+      "plata": { "precio": 80000, "duracion_dias": 15, "menciones_estados": 8 },
+      "oro": { "precio": 110000, "duracion_dias": 30, "menciones_estados": 20 }
+    },
+    "politica_inactividad": {
+      "tiempo_limite_minutos": 20,
+      "notificacion": "Sobria y directa con reseteo automático de sesión"
+    },
+    "politica_recuperacion_retrasos": {
+      "tiempo_maximo_retraso_minutos": 45,
+      "intervalo_auditoria_watchdog_minutos": 5,
+      "accion_automatica": "Reactivación a CONFIRMED, desvinculación de conductor inactivo y reasignación inmediata a conductor activo en zona",
+      "comandos_manuales_operador": ["/recuperar", "/retrasos", "/auditar"]
+    }
+  },
+  "fases": [
+    {
+      "fase": 0,
+      "nombre": "Fundamentos, Infraestructura Core y Personalidad",
+      "estado": "COMPLETADA",
+      "progreso": 100,
+      "objetivo": "Establecer la infraestructura base, el cerebro de Fonsi y conectar los servicios mínimos viables.",
+      "entregables": [
+        "Stack Docker: PostgreSQL 16, Redis 7 y Node.js 20+ en red interna bridge",
+        "Esquema relacional completo: users, merchants, menu_items, orders, order_items, couriers, receipts, ledger, settlements, trips, ad_contracts, status_posts",
+        "Personalidad de Fonsi (SOUL.md / system prompt): Amable guajiro, conciso, cálculos exactos, prohibida la frase 'De Una'",
+        "Integración IA: Gemini 2.5 Flash con contexto de base de datos en tiempo real",
+        "Pruebas y despliegue en Telegram (@Fonsi2x3_bot)"
+      ],
+      "criterios_aceptacion": [
+        "Contenedores Docker levantados y saludables",
+        "Migraciones SQL aplicadas sin errores",
+        "Bot responde en Telegram con la promesa de marca"
+      ]
+    },
+    {
+      "fase": 1,
+      "nombre": "Atención al Cliente, Catálogo en Vivo y Toma de Pedidos",
+      "estado": "COMPLETADA",
+      "progreso": 100,
+      "objetivo": "Lograr que Fonsi atienda a los clientes de inicio a fin para comida y compras sin intervención humana.",
+      "entregables": [
+        "Lectura de catálogos y menús de restaurantes aliados (La Jefa, Loquillo, etc.)",
+        "Preguntas de precisión ante productos genéricos (gaseosa, cigarrillos, etc.)",
+        "Gestión de carrito y generación de órdenes con código único (FX-####)",
+        "Creación de registros formales en tabla 'orders' y 'order_items'"
+      ],
+      "tools_implementadas": [
+        "catalog_browse.ts",
+        "order_create.ts",
+        "merchant_list.ts"
+      ],
+      "criterios_aceptacion": [
+        "Generación exitosa de orden FX con cálculo exacto de subtotal + domicilio",
+        "Consulta de estado de orden por parte del cliente"
+      ]
+    },
+    {
+      "fase": 2,
+      "nombre": "OCR con IA Visual, Antifraude y Libro Mayor (Ledger)",
+      "estado": "COMPLETADA",
+      "progreso": 100,
+      "objetivo": "Validar comprobantes de pago (Bre-B, Nequi, Daviplata, Bancolombia) y registrar asientos contables balanceados.",
+      "entregables": [
+        "Módulo OCR con Gemini 2.5 Flash Vision para lectura instantánea de comprobantes",
+        "Filtro antifraude de comprobantes reciclados por número de referencia único",
+        "Libro mayor contable en partida doble con validación estricta SUM(débitos) == SUM(créditos)",
+        "Módulo de liquidación diaria para mensajeros (cierre de caja, comisiones y recaudo)"
+      ],
+      "tools_implementadas": [
+        "receipt_ocr.ts",
+        "payment_verify.ts",
+        "ledger_post.ts",
+        "courier_settle.ts"
+      ],
+      "criterios_aceptacion": [
+        "Lectura correcta de capturas de pantalla de comprobantes bancarios",
+        "Rechazo de comprobantes duplicados o con montos discrepantes",
+        "Asientos de diario perfectamente cuadrados"
+      ]
+    },
+    {
+      "fase": 3,
+      "nombre": "Mandados, Mototaxis, Logística, Reasignación y Relay Anónimo",
+      "estado": "COMPLETADA",
+      "progreso": 100,
+      "objetivo": "Cotización de transporte y mandados, cálculo de ETAs, watchdog de rescate de pedidos demorados y mensajería anónima.",
+      "entregables": [
+        "Cotizador urbano para mototaxi ($3.000 / $4.000) y rutas intermunicipales",
+        "Calculo de tiempos estimados de llegada (ETA) y asignación automática",
+        "Watchdog recurrente cada 5 minutos para rescatar pedidos con >45 min sin entregar y reasignarlos a flota activa",
+        "Comandos de auditoría de operadores en Telegram (/recuperar, /retrasos, /auditar)",
+        "Sistema de relay anónimo de mensajes entre cliente y repartidor protegiendo la privacidad",
+        "Asignación de viajes con control de estados y geolocalización"
+      ],
+      "tools_implementadas": [
+        "fare_quote.ts",
+        "eta_calculate.ts",
+        "relay_message.ts",
+        "recover_stuck_orders.ts",
+        "dispatch_assign.ts"
+      ],
+      "criterios_aceptacion": [
+        "Cotizaciones instantáneas con desglose de tarifas oficiales",
+        "Cálculo de ETA coherente con zonas locales",
+        "Rescate y reasignación automática de órdenes estancadas sin intervención manual",
+        "Reenvío de mensajes enmascarados entre usuario y conductor"
+      ]
+    },
+    {
+      "fase": 4,
+      "nombre": "Publicidad, Pauta de Comercios y Generación de Estados",
+      "estado": "COMPLETADA",
+      "progreso": 100,
+      "objetivo": "Monetización publicitaria mediante contratos de pauta y publicación periódica de estados promocionales.",
+      "entregables": [
+        "Gestión de contratos de pauta (Planes Bronce $50k, Plata $80k, Oro $110k)",
+        "Publicación y programación de estados promocionales en 'status_posts'",
+        "Marcado de menciones patrocinadas (sponsored: true) para transparencia",
+        "Gestión de vigencias y conteo de impresiones restantes"
+      ],
+      "tools_implementadas": [
+        "ad_pitch.ts",
+        "ad_close.ts",
+        "status_publish.ts"
+      ],
+      "criterios_aceptacion": [
+        "Creación de contratos publicitarios vinculados a comercios",
+        "Generación automática de copys atractivos para estados"
+      ]
+    },
+    {
+      "fase": 5,
+      "nombre": "Plataforma Web Unificada (:3000), Radar GPS y Analítica BI",
+      "estado": "COMPLETADA",
+      "progreso": 100,
+      "objetivo": "Unificar todo el ecosistema en un solo enlace responsivo con radar en tiempo real, BI, watchdog y rastreo.",
+      "entregables": [
+        "Plataforma Web Única en puerto 3000 con 7 pestañas interactivas (Radar GPS, Pedidos, BI, Flota, Comercios, Ledger, Liquidaciones)",
+        "Rastreo interactivo en tiempo real para clientes en /track/:code con OpenStreetMap",
+        "Transmisión continua de coordenadas GPS de mototaxis vía Telegram Live Location",
+        "Módulo de Analítica BI con gráficos interactivos en Chart.js (ingresos, servicios, métodos de pago)",
+        "Ficha de seguridad de conductores para carros y viajes intermunicipales (WhatsApp directo, modelo, color, placa)",
+        "Integración de Llave Universal Bre-B (@3506811888) con QR interactivo",
+        "Watchdog de fondo cada 5 minutos para auto-rescate de pedidos demorados",
+        "Temporizador de inactividad de 20 minutos con notificación sobria y reseteo de sesión"
+      ],
+      "criterios_aceptacion": [
+        "Acceso unificado y responsivo en http://89.117.72.233:3000 desde PC y celular",
+        "Rastreo GPS en tiempo real funcionando sin desfase",
+        "Flujo completo de pagos Bre-B y efectivo validado y cuadrado en contabilidad"
+      ]
+    }
+  ],
+  "entorno_produccion": {
+    "ip": "89.117.72.233",
+    "usuario": "root",
+    "directorio_base": "/root/en-un-2x3",
+    "puertos_mapeados": {
+      "plataforma_web_unificada_node": 3000,
+      "postgresql_host": 5435,
+      "redis_host": 6379,
+      "microservicio_dashboard_interno": 8507
+    },
+    "contenedores_docker": [
+      "en-un-2x3-openclaw-1",
+      "en-un-2x3-postgres-1",
+      "en-un-2x3-redis-1",
+      "en-un-2x3-dashboard-1"
+    ]
+  }
+}

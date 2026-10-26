@@ -1,8 +1,9 @@
 import { Client } from 'pg';
 
 /**
- * Busca pedidos retrasados o "perdidos" (más de 45 minutos sin entregar) 
- * y los vuelve a poner 'activos' (CONFIRMED) para reasignar otra moto.
+ * Watchdog inteligente para pedidos retrasados / atascados:
+ * 1. Pedidos > 12 horas en estado no finalizado se cancelan automáticamente (evita bucles infinitos).
+ * 2. Pedidos entre 45 min y 12 horas se reactivan a 'CONFIRMED' para reasignación de conductor.
  */
 export async function recover_stuck_orders() {
   const client = new Client({
@@ -15,36 +16,42 @@ export async function recover_stuck_orders() {
   await client.connect();
 
   try {
-    // Buscar órdenes que no estén entregadas ni canceladas
-    // y que tengan más de 45 minutos de creadas.
-    const res = await client.query(`
+    // 1. Auto-cancelar pedidos abandonados (> 12 horas)
+    const expiredRes = await client.query(`
+      UPDATE orders 
+      SET status = 'CANCELLED' 
+      WHERE status NOT IN ('DELIVERED', 'CANCELLED', 'DRAFT')
+      AND created_at < NOW() - INTERVAL '12 hours'
+      RETURNING code
+    `);
+    const expiredCodes = expiredRes.rows.map(r => r.code);
+
+    // 2. Reactivar pedidos atascados recientes (entre 45 min y 12 horas)
+    const stuckRes = await client.query(`
       SELECT id, code, status, courier_id, created_at 
       FROM orders 
       WHERE status NOT IN ('DELIVERED', 'CANCELLED', 'DRAFT')
+      AND created_at >= NOW() - INTERVAL '12 hours'
       AND created_at < NOW() - INTERVAL '45 minutes'
     `);
 
-    const stuckOrders = res.rows;
-    const recovered = [];
-
-    for (const order of stuckOrders) {
-      // Ponerlo activo nuevamente: quitamos el mensajero anterior si lo tenía 
-      // y lo devolvemos a CONFIRMED para que el sistema de despacho lo vuelva a tomar
+    const recovered: string[] = [];
+    for (const order of stuckRes.rows) {
       await client.query(`
         UPDATE orders 
         SET status = 'CONFIRMED', courier_id = NULL 
         WHERE id = $1
       `, [order.id]);
-
       recovered.push(order.code);
     }
 
     return {
       status: 'success',
-      message: recovered.length > 0 
-        ? `Se encontraron ${recovered.length} pedidos retrasados/perdidos y se volvieron a activar para reasignación.` 
-        : 'Todos los pedidos están en tiempo óptimo. No hay pedidos perdidos.',
-      recovered_orders: recovered
+      expired_count: expiredCodes.length,
+      expired_orders: expiredCodes,
+      recovered_count: recovered.length,
+      recovered_orders: recovered,
+      message: `Auto-cancelados: ${expiredCodes.length} (>12h) | Reactivados: ${recovered.length} (45m-12h)`
     };
   } catch (err: any) {
     return { status: 'error', error: err.message };

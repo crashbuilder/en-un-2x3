@@ -1,0 +1,7 @@
+{
+  " api_key\: \TU_API_KEY_AQUI\,
+ \model\: \gemini-2.5-flash\,
+ \endpoint\: \https://generativelanguage.googleapis.com/v1beta/openai/chat/completions\,
+ \vps_host\: \contabo\,
+ \vps_target_path\: \/root/en-un-2x3/workspace-fonsi/dataset_recibos.json\
+}
