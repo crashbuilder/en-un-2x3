@@ -802,22 +802,30 @@ bot.action('btn_courier_panel', async (ctx) => {
   await showCourierPanel(ctx, userId);
 });
 
-// Iniciar Registro de Conductor
-bot.action('start_driver_reg', async (ctx) => {
-  await ctx.answerCbQuery();
+// Iniciar Registro de Conductor / Repartidor
+async function startDriverRegistrationFlow(ctx: any) {
   const userId = ctx.from.id.toString();
   const session = getOrCreateSession(userId);
   session.pendingAction = null;
   session.driverReg = { step: 'reg_name' };
 
   const msg = 
-    "📝 <b>Registro de Conductor — Paso 1 de 5:</b>\n\n" +
+    "📝 <b>Registro de Conductor / Domiciliario — Paso 1 de 5:</b>\n\n" +
     "¿Cuál es tu <b>Nombre y Apellidos</b> completos?\n\n" +
     "<i>(Escribe tu nombre en el chat)</i>";
 
   await safeReply(ctx, msg, Markup.inlineKeyboard([
     [Markup.button.callback('❌ Cancelar Registro', 'cancel_driver_reg')]
   ]));
+}
+
+bot.action('start_driver_reg', async (ctx) => {
+  await ctx.answerCbQuery();
+  await startDriverRegistrationFlow(ctx);
+});
+
+bot.command(['registrar', 'registro', 'afiliar', 'trabajar', 'quiero_ser_conductor'], async (ctx) => {
+  await startDriverRegistrationFlow(ctx);
 });
 
 bot.action('cancel_driver_reg', async (ctx) => {
@@ -1230,12 +1238,20 @@ const sendWelcome = async (ctx: any) => {
     ctx,
     msg,
     Markup.inlineKeyboard([
-      [Markup.button.callback('🛵 Pedir Mototaxi', 'btn_mototaxi')],
-      [Markup.button.callback('📦 Domicilios (Comida, Tienda, Farmacia)', 'btn_domicilio')],
-      [Markup.button.callback('🛣️ Viajes Intermunicipales', 'btn_intermunicipal')],
       [
-        Markup.button.callback('📋 Consultar Mi Servicio', 'btn_status_quick'),
-        Markup.button.callback('🏍️ Soy Conductor / Turno', 'btn_courier_panel')
+        Markup.button.callback('🛵 Pedir Mototaxi ($3.000)', 'btn_mototaxi'), 
+        Markup.button.callback('📦 Pedir Domicilio', 'btn_domicilio')
+      ],
+      [
+        Markup.button.callback('🛣️ Rutas Intermunicipales', 'btn_intermunicipal'), 
+        Markup.button.url('🗺️ Radar GPS en Vivo', 'http://89.117.72.233:3000')
+      ],
+      [
+        Markup.button.callback('📝 Registrarme como Conductor / Domiciliario', 'start_driver_reg')
+      ],
+      [
+        Markup.button.callback('🏍️ Mi Panel de Conductor / Turno', 'btn_courier_panel'),
+        Markup.button.callback('📋 Estado de Mi Servicio', 'btn_status_quick')
       ]
     ])
   );
