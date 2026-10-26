@@ -782,7 +782,7 @@ async function showCourierPanel(ctx: any, userId: string) {
 
     buttons.push([Markup.button.callback('💰 Mi Liquidación y Ganancias de Hoy', `courier_my_earnings_${courier.id}`)]);
     buttons.push([Markup.button.url('🗺️ Ver Radar en Vivo', 'http://89.117.72.233:3000')]);
-    buttons.push([Markup.button.callback('🔙 Menú Principal', 'btn_main_menu')]);
+    buttons.push([Markup.button.callback('🛒 Modo Cliente (Pedir comida/moto)', 'btn_client_menu')]);
 
     await safeReply(ctx, msg, Markup.inlineKeyboard(buttons));
   } catch (err: any) {
@@ -1221,7 +1221,7 @@ bot.action(/^courier_delivered_(.+)$/, async (ctx) => {
 });
 
 // ==========================================
-// MENÚ PRINCIPAL Y SALUDO
+// MENÚ PRINCIPAL Y SALUDO (INTELIGENTE POR ROL)
 // ==========================================
 const sendWelcome = async (ctx: any) => {
   const userId = ctx.from.id.toString();
@@ -1230,38 +1230,104 @@ const sendWelcome = async (ctx: any) => {
   session.pendingAction = null;
   session.driverReg = null;
 
+  // 1. Verificar si el usuario es un conductor verificado (por Telegram ID o teléfono)
+  let courier: any = null;
+  try {
+    const courierRes = await dbClient.query(
+      "SELECT * FROM couriers WHERE (tg_user_id = $1 OR wa_phone = $1) AND is_verified = true LIMIT 1",
+      [userId]
+    );
+    if (courierRes.rows.length > 0) {
+      courier = courierRes.rows[0];
+    }
+  } catch (e) {
+    console.warn("Fallo verificando rol de conductor:", e);
+  }
+
+  // 2. Si es conductor y está EN TURNO (trabajando), abrir directamente su panel operativo
+  if (courier && courier.is_active) {
+    return await showCourierPanel(ctx, userId);
+  }
+
+  // 3. Para clientes normales o conductores fuera de turno: Menú de cliente limpio
   const msg = 
     "¡Hola! 🛵 Bienvenido a <b>En un 2x3</b> — Domicilios y Transporte en Fonseca.\n\n" +
     "¿Qué necesitas hoy? Elige una opción o escríbeme directamente: 🚀😎";
 
-  await safeReply(
-    ctx,
-    msg,
-    Markup.inlineKeyboard([
-      [
-        Markup.button.callback('🛵 Pedir Mototaxi ($3.000)', 'btn_mototaxi'), 
-        Markup.button.callback('📦 Pedir Domicilio', 'btn_domicilio')
-      ],
-      [
-        Markup.button.callback('🛣️ Rutas Intermunicipales', 'btn_intermunicipal'), 
-        Markup.button.url('🗺️ Radar GPS en Vivo', 'http://89.117.72.233:3000')
-      ],
-      [
-        Markup.button.callback('📝 Registrarme como Conductor / Domiciliario', 'start_driver_reg')
-      ],
-      [
-        Markup.button.callback('🏍️ Mi Panel de Conductor / Turno', 'btn_courier_panel'),
-        Markup.button.callback('📋 Estado de Mi Servicio', 'btn_status_quick')
-      ]
-    ])
-  );
+  const buttons: any[] = [
+    [
+      Markup.button.callback('🛵 Pedir Mototaxi ($3.000)', 'btn_mototaxi'), 
+      Markup.button.callback('📦 Pedir Domicilio', 'btn_domicilio')
+    ],
+    [
+      Markup.button.callback('🛣️ Rutas Intermunicipales', 'btn_intermunicipal'), 
+      Markup.button.url('🗺️ Radar GPS en Vivo', 'http://89.117.72.233:3000')
+    ],
+    [
+      Markup.button.callback('📋 Consultar Mi Servicio', 'btn_status_quick')
+    ]
+  ];
+
+  // Si es un conductor verificado pero está fuera de turno, mostrar botón discreto para activar turno
+  if (courier && !courier.is_active) {
+    buttons.push([
+      Markup.button.callback('🟢 Iniciar Mi Turno de Trabajo', 'btn_courier_panel')
+    ]);
+  }
+
+  await safeReply(ctx, msg, Markup.inlineKeyboard(buttons));
 };
 
-bot.start(sendWelcome);
+bot.start(async (ctx) => {
+  const payload = (ctx as any).startPayload || '';
+  if (/conductor|registro|chofer|trabajar|afiliar/i.test(payload)) {
+    return await startDriverRegistrationFlow(ctx);
+  }
+  await sendWelcome(ctx);
+});
 
 bot.action('btn_main_menu', async (ctx) => {
   await ctx.answerCbQuery();
   await sendWelcome(ctx);
+});
+
+bot.action('btn_client_menu', async (ctx) => {
+  await ctx.answerCbQuery();
+  const userId = ctx.from.id.toString();
+  let courier: any = null;
+  try {
+    const courierRes = await dbClient.query(
+      "SELECT * FROM couriers WHERE (tg_user_id = $1 OR wa_phone = $1) AND is_verified = true LIMIT 1",
+      [userId]
+    );
+    if (courierRes.rows.length > 0) courier = courierRes.rows[0];
+  } catch (e) {}
+
+  const msg = 
+    "¡Hola! 🛵 Bienvenido a <b>En un 2x3</b> — Domicilios y Transporte en Fonseca.\n\n" +
+    "¿Qué necesitas pedir hoy? Elige una opción: 🚀😎";
+
+  const buttons: any[] = [
+    [
+      Markup.button.callback('🛵 Pedir Mototaxi ($3.000)', 'btn_mototaxi'), 
+      Markup.button.callback('📦 Pedir Domicilio', 'btn_domicilio')
+    ],
+    [
+      Markup.button.callback('🛣️ Rutas Intermunicipales', 'btn_intermunicipal'), 
+      Markup.button.url('🗺️ Radar GPS en Vivo', 'http://89.117.72.233:3000')
+    ],
+    [
+      Markup.button.callback('📋 Consultar Mi Servicio', 'btn_status_quick')
+    ]
+  ];
+
+  if (courier) {
+    buttons.push([
+      Markup.button.callback(courier.is_active ? '🛵 Volver a Mi Panel de Conductor' : '🟢 Iniciar Mi Turno de Trabajo', 'btn_courier_panel')
+    ]);
+  }
+
+  await safeReply(ctx, msg, Markup.inlineKeyboard(buttons));
 });
 
 // ==========================================
