@@ -420,11 +420,162 @@ async function notifyAdminsWhatsApp(text: string) {
   }
 }
 
+// Configuración de Grupos de WhatsApp (Grupo de Conductores y Grupo de Comercios)
+interface GroupsConfig {
+  grupo_conductores_jid: string;
+  grupo_comercios_jid: string;
+  mensaje_publicidad_comercios: string;
+  ultimo_envio_manana: string;
+  ultimo_envio_tarde: string;
+  ultimo_envio_comercios: string;
+}
+
+const GROUPS_FILE = path.join(WORKSPACE_PATH, 'grupos_wasap.json');
+
+function loadGroupsConfig(): GroupsConfig {
+  const defaults: GroupsConfig = {
+    grupo_conductores_jid: '',
+    grupo_comercios_jid: '',
+    mensaje_publicidad_comercios:
+      '🛵🔥 *¡EN UN 2X3 FONSECA ESTÁ ACTIVO!* 🔥🍔\n\n' +
+      '¿Necesitas un domicilio rápido para tu negocio, pedir almuerzo o una carrera segura a *$3.000*?\n\n' +
+      '✅ *Restaurantes y Comercios:* 0% comisión en tus ventas.\n' +
+      '✅ *Domicilios y Mandados:* Llegamos volando a cualquier barrio de Fonseca.\n' +
+      '✅ *Viajes Intermunicipales:* San Juan, Barrancas, Distracción y Riohacha.\n\n' +
+      '📲 *Escríbele directo a Fonsi aquí o en Telegram:* https://t.me/Fonsi2x3_bot',
+    ultimo_envio_manana: '',
+    ultimo_envio_tarde: '',
+    ultimo_envio_comercios: ''
+  };
+  try {
+    if (fs.existsSync(GROUPS_FILE)) {
+      return { ...defaults, ...JSON.parse(fs.readFileSync(GROUPS_FILE, 'utf8')) };
+    }
+  } catch {}
+  return defaults;
+}
+
+function saveGroupsConfig(cfg: GroupsConfig) {
+  try {
+    fs.writeFileSync(GROUPS_FILE, JSON.stringify(cfg, null, 2), 'utf8');
+  } catch (err) {
+    console.error('Error guardando grupos_wasap.json:', err);
+  }
+}
+
+async function sendDriversMorningActivation(turnoLabel: 'DIURNO' | 'NOCTURNO' = 'DIURNO'): Promise<boolean> {
+  const g = loadGroupsConfig();
+  if (!activeSock || !g.grupo_conductores_jid) return false;
+  const botNumber = (activeSock.user?.id || '').split(':')[0].replace(/\D/g, '');
+  const waLink = botNumber ? `https://wa.me/${botNumber}?text=%23turno` : 'escribiendo *#turno* por interno';
+
+  const msg =
+    turnoLabel === 'DIURNO'
+      ? `☀️🛵 *¡BUENOS DÍAS COMBO DE FONSI 2X3! (TURNO DIURNO)* 🛵☀️\n\n` +
+        `Ya están abiertos los pedidos y carreras del día en Fonseca.\n\n` +
+        `👉 *Activa tu turno en 1 toque aquí:*\n` +
+        `• Por WhatsApp: ${waLink}\n` +
+        `• Por Telegram: https://t.me/Fonsi2x3_bot?start=conductor\n\n` +
+        `_Recuerda: al tocar el enlace quedas 🟢 Disponible en la cola de despacho. ¡Buena mar y bendiciones hoy!_`
+      : `🌙🛵 *¡ACTIVOS EQUIPO NOCTURNO FONSI 2X3! (CAMBIO DE TURNO)* 🛵🌙\n\n` +
+        `Entramos en la franja de la tarde/noche (prioridad para el turno nocturno fresco).\n\n` +
+        `👉 *Activa tu turno nocturno en 1 toque aquí:*\n` +
+        `• Por WhatsApp: ${waLink}\n` +
+        `• Por Telegram: https://t.me/Fonsi2x3_bot?start=conductor`;
+
+  try {
+    await activeSock.sendMessage(g.grupo_conductores_jid, { text: msg });
+    return true;
+  } catch (e) {
+    console.error('Error enviando mensaje al grupo de conductores:', e);
+    return false;
+  }
+}
+
+async function sendMerchantsGroupAd(): Promise<boolean> {
+  const g = loadGroupsConfig();
+  if (!activeSock || !g.grupo_comercios_jid) return false;
+  try {
+    await activeSock.sendMessage(g.grupo_comercios_jid, {
+      text: formatWhatsAppText(g.mensaje_publicidad_comercios)
+    });
+    return true;
+  } catch (e) {
+    console.error('Error enviando publicidad al grupo de comercios:', e);
+    return false;
+  }
+}
+
+// Programador automático diario con Jitter humano Anti-Bloqueo
+setInterval(() => {
+  if (connectionStatus !== 'connected' || !activeSock) return;
+  const nowCol = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Bogota' }));
+  const dateKey = nowCol.toISOString().slice(0, 10);
+  const hour = nowCol.getHours();
+  const minute = nowCol.getMinutes();
+  const g = loadGroupsConfig();
+
+  // 1. 6:00 AM - Activación Matutina Grupo Conductores (con delay aleatorio humano de 15 a 90 seg)
+  if (hour === 6 && minute >= 0 && minute <= 5 && g.ultimo_envio_manana !== dateKey && g.grupo_conductores_jid) {
+    g.ultimo_envio_manana = dateKey;
+    saveGroupsConfig(g);
+    const jitterMs = Math.floor(Math.random() * 75000) + 15000;
+    setTimeout(() => sendDriversMorningActivation('DIURNO'), jitterMs);
+  }
+
+  // 2. 4:50 PM (16:50) - Llamado de Solape Turno Nocturno Grupo Conductores
+  if (hour === 16 && minute >= 50 && minute <= 55 && g.ultimo_envio_tarde !== dateKey && g.grupo_conductores_jid) {
+    g.ultimo_envio_tarde = dateKey;
+    saveGroupsConfig(g);
+    const jitterMs = Math.floor(Math.random() * 75000) + 15000;
+    setTimeout(() => sendDriversMorningActivation('NOCTURNO'), jitterMs);
+  }
+
+  // 3. 10:30 AM - Publicidad diaria en el Grupo de Comercios de Fonseca
+  if (hour === 10 && minute >= 30 && minute <= 35 && g.ultimo_envio_comercios !== dateKey && g.grupo_comercios_jid) {
+    g.ultimo_envio_comercios = dateKey;
+    saveGroupsConfig(g);
+    const jitterMs = Math.floor(Math.random() * 90000) + 20000;
+    setTimeout(() => sendMerchantsGroupAd(), jitterMs);
+  }
+}, 60 * 1000);
+
 // Procesador central de mensajes entrantes de WhatsApp
 async function handleIncomingMessage(sock: ReturnType<typeof makeWASocket>, msg: WAMessage) {
   if (!msg.message || msg.key.fromMe) return;
   const remoteJid = msg.key.remoteJid || '';
-  if (!remoteJid || remoteJid.endsWith('@g.us') || remoteJid === 'status@broadcast') return;
+  if (!remoteJid || remoteJid === 'status@broadcast') return;
+
+  // Manejo seguro de Grupos (@g.us): silencioso salvo comandos de vinculación de grupo
+  if (remoteJid.endsWith('@g.us')) {
+    const groupText = (
+      msg.message.conversation ||
+      msg.message.extendedTextMessage?.text ||
+      ''
+    )
+      .trim()
+      .toLowerCase();
+
+    if (groupText === '#grupo conductores' || groupText === '#vincular grupo conductores') {
+      const g = loadGroupsConfig();
+      g.grupo_conductores_jid = remoteJid;
+      saveGroupsConfig(g);
+      await sock.sendMessage(remoteJid, {
+        text:
+          `✅ *Grupo Oficial de Conductores y Domiciliarios Vinculado.*\n\n` +
+          `• Todos los días a las *6:00 AM* enviaré aquí el enlace de activación del *Turno Diurno*.\n` +
+          `• Todos los días a las *4:50 PM* enviaré el llamado para el *Turno Nocturno*.`
+      });
+    } else if (groupText === '#grupo comercios' || groupText === '#vincular grupo comercios') {
+      const g = loadGroupsConfig();
+      g.grupo_comercios_jid = remoteJid;
+      saveGroupsConfig(g);
+      await sock.sendMessage(remoteJid, {
+        text: `✅ *Grupo de Comercios de Fonseca Vinculado.*`
+      });
+    }
+    return;
+  }
 
   const localPhone = extractLocalPhone(remoteJid);
   const pushName = msg.pushName || 'Vecino';
@@ -873,6 +1024,36 @@ async function startWhatsAppBot() {
 const port = parseInt(process.env.PORT || '3005', 10);
 http
   .createServer(async (req, res) => {
+    if (req.url === '/enviar-grupo-conductores') {
+      await sendDriversMorningActivation('DIURNO');
+      res.writeHead(302, { Location: '/campana?sent_drivers=1' });
+      res.end();
+      return;
+    }
+
+    if (req.url === '/enviar-grupo-comercios') {
+      await sendMerchantsGroupAd();
+      res.writeHead(302, { Location: '/campana?sent_merchants=1' });
+      res.end();
+      return;
+    }
+
+    if (req.url === '/guardar-grupos' && req.method === 'POST') {
+      let body = '';
+      req.on('data', chunk => {
+        body += chunk.toString();
+      });
+      req.on('end', () => {
+        const params = new URLSearchParams(body);
+        const g = loadGroupsConfig();
+        g.mensaje_publicidad_comercios = params.get('mensaje_publicidad_comercios') || g.mensaje_publicidad_comercios;
+        saveGroupsConfig(g);
+        res.writeHead(302, { Location: '/campana?saved=1' });
+        res.end();
+      });
+      return;
+    }
+
     if (req.url === '/campana' && req.method === 'POST') {
       let body = '';
       req.on('data', chunk => {
@@ -895,9 +1076,14 @@ http
 
     if (req.url?.startsWith('/campana')) {
       const c = loadActiveCampaign();
+      const g = loadGroupsConfig();
       const participantes = getActivationParticipants();
       const savedBanner = req.url.includes('saved=1')
-        ? `<div style="background:#2e7d32;color:#fff;padding:12px;border-radius:8px;margin-bottom:16px;">✅ ¡Configuración de temporada guardada y activa en tiempo real!</div>`
+        ? `<div style="background:#2e7d32;color:#fff;padding:12px;border-radius:8px;margin-bottom:16px;">✅ ¡Configuración guardada y activa en tiempo real!</div>`
+        : req.url.includes('sent_drivers=1')
+        ? `<div style="background:#1565c0;color:#fff;padding:12px;border-radius:8px;margin-bottom:16px;">🛵 ¡Enlace de activación enviado al Grupo de Conductores!</div>`
+        : req.url.includes('sent_merchants=1')
+        ? `<div style="background:#6a1b9a;color:#fff;padding:12px;border-radius:8px;margin-bottom:16px;">📣 ¡Publicidad enviada al Grupo de Comercios!</div>`
         : '';
 
       const rowsHtml =
@@ -920,12 +1106,12 @@ http
       res.end(`
         <html>
           <head>
-            <title>Panel de Temporadas y Activación - Fonsi 2x3</title>
+            <title>Panel de Temporadas y Grupos - Fonsi 2x3</title>
             <meta name="viewport" content="width=device-width, initial-scale=1">
           </head>
           <body style="font-family:sans-serif;max-width:780px;margin:20px auto;padding:20px;background:#121212;color:#eee;">
-            <h2>🎯 Panel de Temporadas y Activación de Marca — Fonsi 2x3</h2>
-            <p style="color:#aaa;">Configura cómo responde Fonsi durante una jornada especial (sin tocar código ni reiniciar el bot).</p>
+            <h2>🎯 Panel de Temporadas, Activación y Grupos — Fonsi 2x3</h2>
+            <p style="color:#aaa;">Configura campañas por temporada y envíos automáticos seguros a grupos de WhatsApp.</p>
             ${savedBanner}
             <form method="POST" action="/campana" style="background:#1e1e1e;padding:20px;border-radius:12px;border:1px solid #333;">
               <label style="display:block;margin-bottom:14px;font-size:16px;">
@@ -959,9 +1145,40 @@ http
               </label>
 
               <button type="submit" style="background:#00c853;color:#000;font-weight:bold;padding:12px 24px;border:none;border-radius:8px;cursor:pointer;font-size:16px;width:100%;">
-                💾 Guardar y Aplicar al Instante
+                💾 Guardar Campaña al Instante
               </button>
             </form>
+
+            <h3 style="margin-top:32px;">👥 Grupos Automáticos de WhatsApp (Conductores y Comercios)</h3>
+            <div style="background:#1e1e1e;padding:20px;border-radius:12px;border:1px solid #333;">
+              <p><strong>1. Grupo de Conductores (6:00 AM y 4:50 PM):</strong> ${
+                g.grupo_conductores_jid
+                  ? `<span style="color:#4caf50;">🟢 Vinculado (${g.grupo_conductores_jid})</span>`
+                  : `<span style="color:#ffb300;">⏳ Pendiente — Agrega a Fonsi al grupo de conductores y escribe ahí: <code>#grupo conductores</code></span>`
+              }</p>
+              <p><strong>2. Grupo de Comercios Fonseca (10:30 AM):</strong> ${
+                g.grupo_comercios_jid
+                  ? `<span style="color:#4caf50;">🟢 Vinculado (${g.grupo_comercios_jid})</span>`
+                  : `<span style="color:#ffb300;">⏳ Pendiente — Agrega a Fonsi al grupo de comercios y escribe ahí: <code>#grupo comercios</code></span>`
+              }</p>
+              <form method="POST" action="/guardar-grupos" style="margin-top:12px;">
+                <label style="display:block;margin-bottom:10px;">
+                  <strong>📣 Mensaje Publicitario para el Grupo de Comercios:</strong><br/>
+                  <textarea name="mensaje_publicidad_comercios" rows="5" style="width:100%;padding:10px;margin-top:6px;border-radius:6px;background:#2c2c2c;color:#fff;border:1px solid #555;">${g.mensaje_publicidad_comercios}</textarea>
+                </label>
+                <button type="submit" style="background:#29b6f6;color:#000;font-weight:bold;padding:10px 18px;border:none;border-radius:6px;cursor:pointer;">
+                  💾 Actualizar Texto de Publicidad
+                </button>
+              </form>
+              <div style="margin-top:16px;display:flex;gap:12px;flex-wrap:wrap;">
+                <a href="/enviar-grupo-conductores" style="background:#1976d2;color:#fff;padding:10px 16px;border-radius:6px;text-decoration:none;font-weight:bold;">
+                  🛵 Enviar Activación al Grupo Conductores Ahora
+                </a>
+                <a href="/enviar-grupo-comercios" style="background:#8e24aa;color:#fff;padding:10px 16px;border-radius:6px;text-decoration:none;font-weight:bold;">
+                  📣 Enviar Publicidad al Grupo Comercios Ahora
+                </a>
+              </div>
+            </div>
 
             <h3 style="margin-top:32px;">📋 Personas Activadas (${participantes.length})</h3>
             <table style="width:100%;border-collapse:collapse;background:#1e1e1e;border-radius:8px;overflow:hidden;">
