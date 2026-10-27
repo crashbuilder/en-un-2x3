@@ -2317,7 +2317,17 @@ REGLAS SUPREMAS DE ATENCIÓN UNIVERSAL (TEXTO, AUDIO, MULTI-IDIOMA Y BOTONES):
    - Efectivo: Se paga contra entrega.
    - Transferencia / Llave Bre-B: Alias universal obligatorio: @3506811888 (con el @ obligatorio).`;
 
-  const fullSystemPrompt = `${fonsiSoul}\n\n=== BASE DE DATOS EN VIVO ===\nComercios y menús actuales:\n${dbContext}\n\n${promptAntiRobot}`;
+  let campaignBlock = '';
+  try {
+    const campFile = '/workspace/campana_activa.json';
+    if (fs.existsSync(campFile)) {
+      const c = JSON.parse(fs.readFileSync(campFile, 'utf8'));
+      if (c && c.activa) {
+        campaignBlock = `\n=== 🎯 CAMPAÑA / TEMPORADA ACTIVA HOY (${c.nombre}) ===\nPRIORIDAD HOY: ${c.instrucciones_ia}\nSi el usuario dice "${c.frase_clave}", responde primero con: ${c.respuesta_directa}\n================================================\n`;
+      }
+    }
+  } catch (e) {}
+  const fullSystemPrompt = `${fonsiSoul}\n${campaignBlock}\n=== BASE DE DATOS EN VIVO ===\nComercios y menús actuales:\n${dbContext}\n\n${promptAntiRobot}`;
 
   const primaryModel = process.env.LLM_MODEL || 'gemini-2.5-flash';
   let retries = 0;
