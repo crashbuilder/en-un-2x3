@@ -716,14 +716,46 @@ async function startWhatsAppBot() {
   });
 }
 
-// Servidor HTTP de salud y visor de código QR en navegador
+// Servidor HTTP de salud, visor de código QR y cambio de línea en 1 clic
 const port = parseInt(process.env.PORT || '3005', 10);
 http
-  .createServer((req, res) => {
+  .createServer(async (req, res) => {
+    if (req.url === '/reset-linea') {
+      try {
+        if (activeSock) {
+          try {
+            await activeSock.logout();
+          } catch {}
+        }
+        const authFolder = path.join(process.cwd(), 'auth_info_baileys');
+        fs.rmSync(authFolder, { recursive: true, force: true });
+        latestQR = null;
+        connectionStatus = 'connecting';
+        setTimeout(() => startWhatsAppBot(), 1500);
+      } catch (e) {
+        console.error('Error reiniciando línea:', e);
+      }
+      res.writeHead(302, { Location: '/qr' });
+      res.end();
+      return;
+    }
+
     if (req.url === '/qr') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       if (connectionStatus === 'connected') {
-        res.end('<html><body style="font-family:sans-serif;text-align:center;padding:40px;"><h1>✅ Fonsi 2x3 WhatsApp ya está Conectado</h1></body></html>');
+        res.end(`
+          <html>
+            <body style="font-family:sans-serif;text-align:center;padding:40px;background:#111;color:#fff;">
+              <h1>✅ Fonsi 2x3 WhatsApp está Conectado</h1>
+              <p>El bot está operando en vivo con la base de datos de Fonseca.</p>
+              <br/>
+              <a href="/reset-linea" onclick="return confirm('¿Seguro que deseas desvincular la línea actual y conectar un número nuevo?');"
+                 style="background:#e53935;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">
+                 🔄 Cambiar de Línea / Vincular otro Número
+              </a>
+            </body>
+          </html>
+        `);
       } else if (latestQR) {
         const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(latestQR)}`;
         res.end(`
@@ -734,11 +766,13 @@ http
               <p>Abre WhatsApp &rarr; Dispositivos vinculados &rarr; Vincular un dispositivo</p>
               <img src="${qrUrl}" style="background:#fff;padding:16px;border-radius:12px;" />
               <p><small>Estado: ${connectionStatus} (Se actualiza cada 15s)</small></p>
+              <br/>
+              <a href="/reset-linea" style="color:#aaa;font-size:13px;">🔄 Generar un QR nuevo desde cero</a>
             </body>
           </html>
         `);
       } else {
-        res.end('<html><head><meta http-equiv="refresh" content="5"></head><body style="font-family:sans-serif;text-align:center;padding:40px;"><h2>⏳ Generando código QR... espera unos segundos</h2></body></html>');
+        res.end('<html><head><meta http-equiv="refresh" content="4"></head><body style="font-family:sans-serif;text-align:center;padding:40px;background:#111;color:#fff;"><h2>⏳ Generando código QR nuevo... espera 4 segundos</h2></body></html>');
       }
       return;
     }
