@@ -1,0 +1,25 @@
+{
+  "name": "fonsi-2x3-wasap",
+  "version": "1.0.0",
+  "description": "Fonsi 2x3 WhatsApp Bot - Impulsado por IA (Gemini 2.5 Flash + Baileys Multi-Device)",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "npx tsx src/index.ts",
+    "dev": "npx tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.8",
+    "dotenv": "^16.4.5",
+    "ioredis": "^5.4.1",
+    "pg": "^8.11.5",
+    "pino": "^9.4.0",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.7",
+    "@types/pg": "^8.11.6",
+    "@types/qrcode-terminal": "^0.12.2",
+    "tsx": "^4.19.1",
+    "typescript": "^5.4.5"
+  }
+}

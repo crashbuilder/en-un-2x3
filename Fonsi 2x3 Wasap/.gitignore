@@ -1,0 +1,9 @@
+node_modules/
+dist/
+auth_info_baileys/
+.env
+*.log
+test_*.js
+test_*.ts
+list_models.js
+dataset_recibos_raw/

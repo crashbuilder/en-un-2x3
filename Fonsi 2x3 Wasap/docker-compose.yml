@@ -1,0 +1,14 @@
+services:
+  fonsi-wasap:
+    container_name: fonsi-2x3-wasap
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile
+    network_mode: "host"
+    env_file:
+      - .env
+    volumes:
+      - ./auth_info_baileys:/app/auth_info_baileys
+      - /root/en-un-2x3/workspace-fonsi:/workspace
+      - ./src:/app/src
