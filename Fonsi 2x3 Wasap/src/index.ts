@@ -250,7 +250,86 @@ async function analyzeReceiptBuffer(buffer: Buffer, mimeType: string): Promise<a
   }
 }
 
-// Motor Conversacional IA (Gemini 2.5 Flash + Contexto PostgreSQL en vivo)
+// Configuración de Campañas / Instrucciones por Temporada y Activación de Marca
+interface CampaignConfig {
+  activa: boolean;
+  nombre: string;
+  frase_clave: string;
+  respuesta_directa: string;
+  instrucciones_ia: string;
+  actualizado_en: string;
+}
+
+const CAMPAIGN_FILE = path.join(WORKSPACE_PATH, 'campana_activa.json');
+const ACTIVATIONS_LOG_FILE = path.join(WORKSPACE_PATH, 'activaciones_registradas.json');
+
+function loadActiveCampaign(): CampaignConfig {
+  const defaultCampaign: CampaignConfig = {
+    activa: false,
+    nombre: 'Jornada de Activación de Marca Fonsi 2x3',
+    frase_clave: 'quiero activarme',
+    respuesta_directa:
+      '🎉 *¡ESO ES TODO PRIMO! Bienvenido a la Jornada de Activación de Fonsi 2x3 en Fonseca.*\n\n' +
+      '🎁 Tu número ya quedó pre-registrado en nuestra activación de marca.\n\n' +
+      '👉 Respóndeme con tu *Nombre y tu Barrio en Fonseca* para completar tu activación y darte tu beneficio del día:',
+    instrucciones_ia:
+      'HOY ESTAMOS EN JORNADA ESPECIAL DE ACTIVACIÓN DE MARCA DE FONSI 2X3 EN FONSECA. ' +
+      'Si el cliente menciona que quiere activarse o te da su nombre y barrio tras el mensaje de activación, ' +
+      'felicítalo con mucho entusiasmo guajiro, confírmale que ya quedó 100% ACTIVADO con Fonsi 2x3 y recuérdale que tiene domicilios en un 2x3 y mototaxi urbano a $3.000.',
+    actualizado_en: new Date().toISOString()
+  };
+
+  try {
+    if (fs.existsSync(CAMPAIGN_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(CAMPAIGN_FILE, 'utf8'));
+      return { ...defaultCampaign, ...parsed };
+    }
+  } catch (err) {
+    console.error('Error leyendo campana_activa.json:', err);
+  }
+  return defaultCampaign;
+}
+
+function saveActiveCampaign(config: CampaignConfig) {
+  try {
+    config.actualizado_en = new Date().toISOString();
+    fs.writeFileSync(CAMPAIGN_FILE, JSON.stringify(config, null, 2), 'utf8');
+  } catch (err) {
+    console.error('Error guardando campana_activa.json:', err);
+  }
+}
+
+function registerActivationParticipant(phone: string, name: string, message: string, campaignName: string) {
+  try {
+    let list: Array<any> = [];
+    if (fs.existsSync(ACTIVATIONS_LOG_FILE)) {
+      list = JSON.parse(fs.readFileSync(ACTIVATIONS_LOG_FILE, 'utf8'));
+      if (!Array.isArray(list)) list = [];
+    }
+    list.unshift({
+      telefono: phone,
+      nombre_whatsapp: name,
+      mensaje: message,
+      campana: campaignName,
+      fecha: new Date().toLocaleString('es-CO', { timeZone: 'America/Bogota' })
+    });
+    fs.writeFileSync(ACTIVATIONS_LOG_FILE, JSON.stringify(list.slice(0, 1000), null, 2), 'utf8');
+  } catch (err) {
+    console.error('Error guardando participante de activación:', err);
+  }
+}
+
+function getActivationParticipants(): Array<any> {
+  try {
+    if (fs.existsSync(ACTIVATIONS_LOG_FILE)) {
+      const list = JSON.parse(fs.readFileSync(ACTIVATIONS_LOG_FILE, 'utf8'));
+      return Array.isArray(list) ? list : [];
+    }
+  } catch {}
+  return [];
+}
+
+// Motor Conversacional IA (Gemini 2.5 Flash + Contexto PostgreSQL en vivo + Temporada/Campaña)
 async function askFonsiAI(senderPhone: string, userName: string, userMessage: string, courier: any): Promise<string> {
   const apiKey = process.env.LLM_API_KEY;
   if (!apiKey) {
@@ -275,12 +354,21 @@ async function askFonsiAI(senderPhone: string, userName: string, userMessage: st
       .join('\n');
   } catch {}
 
+  const campaign = loadActiveCampaign();
+  const campaignBlock =
+    campaign.activa && campaign.instrucciones_ia
+      ? `\n=== 🎯 INSTRUCCIÓN ESPECIAL DE TEMPORADA / CAMPAÑA ACTIVA HOY (${campaign.nombre}) ===\n` +
+        `PRIORIDAD MÁXIMA HOY: ${campaign.instrucciones_ia}\n` +
+        `Frase clave de la jornada: "${campaign.frase_clave}"\n====================================================================\n`
+      : '';
+
   const roleNote =
     courier && (courier.status === 'available' || courier.status === 'busy')
       ? `El usuario actual ES CONDUCTOR ACTIVO EN TURNO (${courier.service_type}, turno ${courier.shift_type}).`
       : `El usuario actual está en MODO CLIENTE (Teléfono WhatsApp: ${senderPhone}, Nombre: ${userName}).`;
 
   const rulesPrompt = `
+${campaignBlock}
 REGLAS ESTRICTAS DE NEGOCIO FONSI 2X3 (WHATSAPP):
 1. Mototaxi urbano en Fonseca: tarifa plana de $3.000 COP. El 100% es para el mototaxista (paga $2.000/día de suscripción).
 2. Domicilios urbanos: 1 parada $3.000 ($2.000 domiciliario / $1.000 Fonsi), 2 paradas $5.000 ($3.500 / $1.500), 3 paradas $8.000 ($6.000 / $2.000).
@@ -580,13 +668,78 @@ async function handleIncomingMessage(sock: ReturnType<typeof makeWASocket>, msg:
     }
   }
 
+  // 3.5. Comandos de Administrador para Campañas / Temporadas (#campana on | #campana off | #campana estado)
+  if (lower.startsWith('#campana') || lower.startsWith('#campaña')) {
+    const campaign = loadActiveCampaign();
+    const arg = clean.replace(/^#campa[ñn]a\s*/i, '').trim();
+
+    if (arg.toLowerCase() === 'on' || arg.toLowerCase() === 'activar') {
+      campaign.activa = true;
+      saveActiveCampaign(campaign);
+      await sock.sendMessage(remoteJid, {
+        text:
+          `🟢 *CAMPAÑA DE TEMPORADA ACTIVADA*\n` +
+          `🏷️ *Nombre:* ${campaign.nombre}\n` +
+          `🔑 *Frase disparadora:* "${campaign.frase_clave}"\n\n` +
+          `🌐 Puedes editar los textos en vivo en:\nhttp://89.117.72.233:3005/campana`
+      });
+      return;
+    }
+
+    if (arg.toLowerCase() === 'off' || arg.toLowerCase() === 'apagar' || arg.toLowerCase() === 'desactivar') {
+      campaign.activa = false;
+      saveActiveCampaign(campaign);
+      await sock.sendMessage(remoteJid, {
+        text: `🔴 *Campaña de temporada DESACTIVADA.* Fonsi volvió a su comportamiento habitual del día a día.`
+      });
+      return;
+    }
+
+    const inscritos = getActivationParticipants().length;
+    await sock.sendMessage(remoteJid, {
+      text:
+        `🎯 *ESTADO DE CAMPAÑA / TEMPORADA FONSI 2X3*\n` +
+        `• Estado: *${campaign.activa ? '🟢 ACTIVA' : '🔴 INACTIVA'}*\n` +
+        `• Nombre: *${campaign.nombre}*\n` +
+        `• Frase clave: *"${campaign.frase_clave}"*\n` +
+        `• Personas activadas registradas: *${inscritos}*\n\n` +
+        `Comandos rápidos:\n` +
+        `• *#campana on* — Encender campaña\n` +
+        `• *#campana off* — Apagar campaña\n` +
+        `• Panel web completo: http://89.117.72.233:3005/campana`
+    });
+    return;
+  }
+
+  // 3.6. Disparador de Campaña / Jornada de Activación de Marca (Ej: "Hola Fonsi quiero activarme")
+  const activeCampaign = loadActiveCampaign();
+  const normalizedInput = lower.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const normalizedTrigger = (activeCampaign.frase_clave || 'quiero activarme')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+
+  if (activeCampaign.activa && normalizedTrigger && normalizedInput.includes(normalizedTrigger)) {
+    registerActivationParticipant(localPhone, pushName, clean, activeCampaign.nombre);
+    await sock.sendMessage(remoteJid, {
+      text: formatWhatsAppText(activeCampaign.respuesta_directa)
+    });
+    await notifyAdminsWhatsApp(
+      `🎉 *NUEVA ACTIVACIÓN DE MARCA*\n👤 Nombre WhatsApp: ${pushName}\n📱 Teléfono: ${localPhone}\n💬 Mensaje: "${clean}"\n🏷️ Campaña: ${activeCampaign.nombre}`
+    );
+    return;
+  }
+
   // 4. Si NO es conductor o el conductor está INACTIVO ('offline'), mostrar experiencia de CLIENTE
   const isOfflineCourier = Boolean(courier && courier.status === 'offline');
 
   if (lower === 'hola' || lower === 'buenas' || lower === 'menu' || lower === 'menú' || lower === 'inicio') {
-    await sock.sendMessage(remoteJid, {
-      text: buildClientMenu(courier?.name || pushName, isOfflineCourier, courier?.shift_type)
-    });
+    let menuText = buildClientMenu(courier?.name || pushName, isOfflineCourier, courier?.shift_type);
+    if (activeCampaign.activa) {
+      menuText += `\n\n🎁 *${activeCampaign.nombre}:* Escribe *"Hola Fonsi ${activeCampaign.frase_clave}"* para participar hoy.`;
+    }
+    await sock.sendMessage(remoteJid, { text: menuText });
     return;
   }
 
@@ -716,10 +869,121 @@ async function startWhatsAppBot() {
   });
 }
 
-// Servidor HTTP de salud, visor de código QR y cambio de línea en 1 clic
+// Servidor HTTP de salud, visor de código QR, cambio de línea y panel de Campañas/Temporadas
 const port = parseInt(process.env.PORT || '3005', 10);
 http
   .createServer(async (req, res) => {
+    if (req.url === '/campana' && req.method === 'POST') {
+      let body = '';
+      req.on('data', chunk => {
+        body += chunk.toString();
+      });
+      req.on('end', () => {
+        const params = new URLSearchParams(body);
+        const current = loadActiveCampaign();
+        current.activa = params.get('activa') === 'true';
+        current.nombre = params.get('nombre') || current.nombre;
+        current.frase_clave = params.get('frase_clave') || current.frase_clave;
+        current.respuesta_directa = params.get('respuesta_directa') || current.respuesta_directa;
+        current.instrucciones_ia = params.get('instrucciones_ia') || current.instrucciones_ia;
+        saveActiveCampaign(current);
+        res.writeHead(302, { Location: '/campana?saved=1' });
+        res.end();
+      });
+      return;
+    }
+
+    if (req.url?.startsWith('/campana')) {
+      const c = loadActiveCampaign();
+      const participantes = getActivationParticipants();
+      const savedBanner = req.url.includes('saved=1')
+        ? `<div style="background:#2e7d32;color:#fff;padding:12px;border-radius:8px;margin-bottom:16px;">✅ ¡Configuración de temporada guardada y activa en tiempo real!</div>`
+        : '';
+
+      const rowsHtml =
+        participantes.length === 0
+          ? `<tr><td colspan="4" style="padding:12px;text-align:center;color:#888;">Aún no hay registros en esta jornada.</td></tr>`
+          : participantes
+              .slice(0, 50)
+              .map(
+                p =>
+                  `<tr style="border-bottom:1px solid #333;">
+                    <td style="padding:8px;">${p.fecha || ''}</td>
+                    <td style="padding:8px;font-weight:bold;color:#4caf50;">${p.telefono || ''}</td>
+                    <td style="padding:8px;">${p.nombre_whatsapp || ''}</td>
+                    <td style="padding:8px;">${p.mensaje || ''}</td>
+                  </tr>`
+              )
+              .join('');
+
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`
+        <html>
+          <head>
+            <title>Panel de Temporadas y Activación - Fonsi 2x3</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+          </head>
+          <body style="font-family:sans-serif;max-width:780px;margin:20px auto;padding:20px;background:#121212;color:#eee;">
+            <h2>🎯 Panel de Temporadas y Activación de Marca — Fonsi 2x3</h2>
+            <p style="color:#aaa;">Configura cómo responde Fonsi durante una jornada especial (sin tocar código ni reiniciar el bot).</p>
+            ${savedBanner}
+            <form method="POST" action="/campana" style="background:#1e1e1e;padding:20px;border-radius:12px;border:1px solid #333;">
+              <label style="display:block;margin-bottom:14px;font-size:16px;">
+                <strong>Estado de la Campaña:</strong><br/>
+                <select name="activa" style="width:100%;padding:10px;margin-top:6px;border-radius:6px;background:#2c2c2c;color:#fff;border:1px solid #555;font-size:15px;">
+                  <option value="true" ${c.activa ? 'selected' : ''}>🟢 ACTIVA (Fonsi responde en Modo Temporada / Activación)</option>
+                  <option value="false" ${!c.activa ? 'selected' : ''}>🔴 INACTIVA (Fonsi responde en Modo Normal diario)</option>
+                </select>
+              </label>
+
+              <label style="display:block;margin-bottom:14px;">
+                <strong>Nombre de la Jornada / Temporada:</strong><br/>
+                <input type="text" name="nombre" value="${c.nombre.replace(/"/g, '&quot;')}" style="width:100%;padding:10px;margin-top:6px;border-radius:6px;background:#2c2c2c;color:#fff;border:1px solid #555;" />
+              </label>
+
+              <label style="display:block;margin-bottom:14px;">
+                <strong>🔑 Frase Clave Disparadora (ej: <em>quiero activarme</em>):</strong><br/>
+                <small style="color:#aaa;">Si el usuario escribe "Hola Fonsi quiero activarme" (o cualquier frase que contenga estas palabras), Fonsi lo registra y dispara el mensaje especial.</small>
+                <input type="text" name="frase_clave" value="${c.frase_clave.replace(/"/g, '&quot;')}" style="width:100%;padding:10px;margin-top:6px;border-radius:6px;background:#2c2c2c;color:#fff;border:1px solid #555;" />
+              </label>
+
+              <label style="display:block;margin-bottom:14px;">
+                <strong>💬 Respuesta Inmediata al detectar la Frase Clave:</strong><br/>
+                <textarea name="respuesta_directa" rows="4" style="width:100%;padding:10px;margin-top:6px;border-radius:6px;background:#2c2c2c;color:#fff;border:1px solid #555;">${c.respuesta_directa}</textarea>
+              </label>
+
+              <label style="display:block;margin-bottom:18px;">
+                <strong>🧠 Instrucciones adicionales para la IA durante ese día:</strong><br/>
+                <small style="color:#aaa;">Qué debe saber Gemini 2.5 Flash cuando siga conversando con la persona ese día.</small>
+                <textarea name="instrucciones_ia" rows="4" style="width:100%;padding:10px;margin-top:6px;border-radius:6px;background:#2c2c2c;color:#fff;border:1px solid #555;">${c.instrucciones_ia}</textarea>
+              </label>
+
+              <button type="submit" style="background:#00c853;color:#000;font-weight:bold;padding:12px 24px;border:none;border-radius:8px;cursor:pointer;font-size:16px;width:100%;">
+                💾 Guardar y Aplicar al Instante
+              </button>
+            </form>
+
+            <h3 style="margin-top:32px;">📋 Personas Activadas (${participantes.length})</h3>
+            <table style="width:100%;border-collapse:collapse;background:#1e1e1e;border-radius:8px;overflow:hidden;">
+              <thead>
+                <tr style="background:#2c2c2c;text-align:left;">
+                  <th style="padding:10px;">Fecha / Hora</th>
+                  <th style="padding:10px;">Teléfono</th>
+                  <th style="padding:10px;">Nombre</th>
+                  <th style="padding:10px;">Mensaje</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${rowsHtml}
+              </tbody>
+            </table>
+            <p style="text-align:center;margin-top:20px;"><a href="/qr" style="color:#4fc3f7;">&larr; Volver al Visor QR de WhatsApp</a></p>
+          </body>
+        </html>
+      `);
+      return;
+    }
+
     if (req.url === '/reset-linea') {
       try {
         if (activeSock) {
