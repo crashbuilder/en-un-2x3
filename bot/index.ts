@@ -132,6 +132,113 @@ function getSmartContextButtons(text: string, cleanText: string = '') {
   ]);
 }
 
+// ==========================================
+// CAPA DE RESILIENCIA GEMINI (cuota 429 / caídas 503)
+// - Respeta el retryDelay que informa la API (no martilla con reintentos).
+// - Si un modelo agota su cupo, lo pone en cooldown y prueba el siguiente de la lista.
+// - Expone el último estado para dar mensajes honestos al cliente y alertar a los admins.
+// ==========================================
+const GEMINI_MODELS: string[] = [
+  process.env.LLM_MODEL || 'gemini-2.5-flash',
+  ...(process.env.LLM_FALLBACK_MODELS || 'gemini-2.5-flash-lite').split(',').map((s) => s.trim()).filter(Boolean)
+].filter((m, i, arr) => m && arr.indexOf(m) === i);
+
+const geminiCooldown = new Map<string, number>();
+let geminiLastStatus = 200;
+let lastGeminiAlertAt = 0;
+const lastFailedOrderAlert = new Map<string, number>();
+
+const sleepMs = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function geminiAllModelsCoolingDown(): boolean {
+  const now = Date.now();
+  return GEMINI_MODELS.every((m) => (geminiCooldown.get(m) || 0) > now);
+}
+
+async function geminiFetchWithFallback(build: (model: string) => { url: string; init: any }): Promise<Response> {
+  let lastRes: Response | null = null;
+  for (const model of GEMINI_MODELS) {
+    if ((geminiCooldown.get(model) || 0) > Date.now()) continue;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const { url, init } = build(model);
+      const res = await fetch(url, init);
+      if (res.ok) {
+        geminiLastStatus = 200;
+        return res;
+      }
+      lastRes = res;
+      geminiLastStatus = res.status;
+      if (res.status === 429) {
+        let bodyText = '';
+        try { bodyText = await res.clone().text(); } catch {}
+        const m = bodyText.match(/retry in ([\d.]+)s|"retryDelay":\s*"(\d+)s"/i);
+        const secs = m ? parseFloat(m[1] || m[2]) : 60;
+        const isDaily = /PerDay/i.test(bodyText);
+        if (isDaily || secs > 10) {
+          const coolSecs = Math.min(secs, 3600);
+          geminiCooldown.set(model, Date.now() + coolSecs * 1000);
+          console.warn(`⚠️ [GEMINI] ${model} sin cupo (${isDaily ? 'diario' : 'por minuto'}). Cooldown ${Math.round(coolSecs)}s. Probando siguiente modelo si existe.`);
+          break;
+        }
+        await sleepMs(Math.max(1000, secs * 1000));
+        continue;
+      }
+      if (res.status >= 500) {
+        await sleepMs(1500 * (attempt + 1));
+        continue;
+      }
+      return res;
+    }
+  }
+  if (lastRes) return lastRes;
+  geminiLastStatus = 429;
+  return new Response(
+    JSON.stringify({ error: { code: 429, message: 'Cupo de Gemini agotado en todos los modelos (en cooldown).' } }),
+    { status: 429, headers: { 'Content-Type': 'application/json' } }
+  );
+}
+
+function geminiNativeFetch(apiKey: string, init: any): Promise<Response> {
+  return geminiFetchWithFallback((model) => ({
+    url: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    init
+  }));
+}
+
+function geminiOpenAIFetch(init: any): Promise<Response> {
+  const baseBody = JSON.parse(init.body);
+  return geminiFetchWithFallback((model) => ({
+    url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+    init: { ...init, body: JSON.stringify({ ...baseBody, model }) }
+  }));
+}
+
+function geminiIsDown(): boolean {
+  return geminiAllModelsCoolingDown() || geminiLastStatus === 429 || geminiLastStatus >= 500;
+}
+
+async function alertGeminiProblem(detail: string) {
+  if (Date.now() - lastGeminiAlertAt < 60 * 60 * 1000) return;
+  lastGeminiAlertAt = Date.now();
+  try {
+    await notifyAdmins(
+      `⚠️ <b>La IA de Fonsi está sin cupo o sin servicio</b>\n${detail}\n` +
+      `Revisa la facturación de la API key de Gemini (el plan gratuito permite solo ~20 solicitudes/día por modelo).`
+    );
+  } catch {}
+}
+
+async function alertFailedOrder(userId: string, userName: string, text: string) {
+  const last = lastFailedOrderAlert.get(userId) || 0;
+  if (Date.now() - last < 5 * 60 * 1000) return;
+  lastFailedOrderAlert.set(userId, Date.now());
+  try {
+    await notifyAdmins(
+      `🚨 <b>Pedido NO procesado por falla de IA</b>\n👤 ${userName || 'Cliente'} (ID ${userId})\n💬 "${(text || '').slice(0, 600)}"\nAtiéndelo manualmente.`
+    );
+  } catch {}
+}
+
 // Transcripción Multimodal Universal de Notas de Voz y Audios con Gemini 2.5 Flash
 // Reconoce cualquier idioma, dialecto, acento regional, velocidad y modismo con fidelidad absoluta
 async function transcribeAudio(audioUrl: string, originalMime?: string): Promise<string> {
@@ -156,7 +263,7 @@ async function transcribeAudio(audioUrl: string, originalMime?: string): Promise
       mimeType = 'audio/aac';
     }
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+    const response = await geminiNativeFetch(apiKey, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -170,7 +277,7 @@ async function transcribeAudio(audioUrl: string, originalMime?: string): Promise
                 }
               },
               {
-                text: "Eres un transcriptor e intérprete de audio inteligente de alta fidelidad para el servicio 'En un 2x3' en Fonseca, La Guajira, Colombia.\n\nPAUTAS DE TRANSCRIPCIÓN E INTERPRETACIÓN PRECISA:\n1. SEPARACIÓN Y COHERENCIA DE PALABRAS: Transcribe en español colombiano claro y coherente lo que la persona realmente dice. Separa adecuadamente palabras que se pronuncien pegadas por rapidez o fonética costeña (ejemplo clave: 'de Maye sería' NUNCA lo unas como 'mayesería', reconócelo siempre como 'de Maye sería' o 'de Restaurante Maye').\n2. COMERCIOS Y RESTAURANTES LOCALES DE FONSECA: Conoce los comercios y restaurantes aliados: Restaurante Maye (almuerzos corrientes y platos típicos), Don Jediondo, La Fogata, Asadero El Paisa, La Jefa, Loquillo, Doria, droguerías, tiendas y panaderías.\n3. BARRIOS Y PUNTOS CLAVE: Primero de Julio, Villa Luz, San Agustín, Cerrejón, 12 de Octubre, Brisas del Ranchería, La Floresta, Plaza Central, Mercado Público, Hospital San Agustín, Terminal de Transportes, La Bomba, Distracción, San Juan del Cesar, Barrancas, etc.\n4. LIMPIEZA DE TARTAMUDEOS Y MULETILLAS: Omite tropiezos de voz o repeticiones innecesarias (ejemplo: si el audio dice 'este... que tenga, que tenga los menús que tenga de almuerzo corriente', transcribe limpio: 'los menús que tenga de almuerzo corriente').\n5. CERO TEXTO EXTRA: Devuelve ÚNICAMENTE el texto limpio de lo que el cliente solicita o pregunta. Prohibido agregar introducciones, comentarios, explicaciones, prefijos ni comillas."
+                text: "Eres un transcriptor e intérprete de audio inteligente de alta fidelidad para el servicio 'En un 2x3' en Fonseca, La Guajira, Colombia.\n\nPAUTAS DE TRANSCRIPCIÓN E INTERPRETACIÓN PRECISA:\n1. SEPARACIÓN Y COHERENCIA DE PALABRAS: Transcribe en español colombiano claro y coherente lo que la persona realmente dice. Separa adecuadamente palabras que se pronuncien pegadas por rapidez o fonética costeña (ejemplo clave: 'de Maye sería' NUNCA lo unas como 'mayesería', reconócelo siempre como 'de Maye sería' o 'de Restaurante Maye').\n2. COMERCIOS Y RESTAURANTES LOCALES DE FONSECA: Conoce los comercios y restaurantes aliados: Restaurante Maye (almuerzos corrientes y platos típicos), Don Jediondo, La Fogata, Asadero El Paisa, La Jefa, Loquillo, Doria, droguerías, tiendas y panaderías.\n3. BARRIOS Y PUNTOS CLAVE: Primero de Julio, Villa Luz, San Agustín, Cerrejón, 12 de Octubre, Brisas del Ranchería, La Floresta, Plaza Central, Mercado Público, Hospital San Agustín, Terminal de Transportes, La Bomba, Distracción, San Juan del Cesar, Barrancas, etc.\n4. LIMPIEZA DE TARTAMUDEOS Y MULETILLAS: Omite tropiezos de voz o repeticiones innecesarias (ejemplo: si el audio dice 'este... que tenga, que tenga los menús que tenga de almuerzo corriente', transcribe limpio: 'los menús que tenga de almuerzo corriente').\n5. MARCAS Y PRODUCTOS FRECUENTES EN PEDIDOS: cigarrillos Time, Boston, Marlboro, Mustang, Lucky Strike (una 'caja' o 'cajetilla' de cigarrillos = 20 unidades); cervezas Águila, Poker, Club Colombia, Costeña; gaseosas Coca-Cola, Pepsi, Postobón, Colombiana; Tang; pañales Pequeñín, Huggies, Pampers, Winny (recién nacido = etapa 0). Prefiere SIEMPRE estas marcas cuando el sonido sea ambiguo y NO inventes marcas que no se escuchen.\n6. CERO TEXTO EXTRA: Devuelve ÚNICAMENTE el texto limpio de lo que el cliente solicita o pregunta. Prohibido agregar introducciones, comentarios, explicaciones, prefijos ni comillas."
               }
             ]
           }
@@ -2315,7 +2422,13 @@ REGLAS SUPREMAS DE ATENCIÓN UNIVERSAL (TEXTO, AUDIO, MULTI-IDIOMA Y BOTONES):
      e) NUNCA crees pedidos con direcciones incompletas o inventadas.
 4. MÉTODOS DE PAGO:
    - Efectivo: Se paga contra entrega.
-   - Transferencia / Llave Bre-B: Alias universal obligatorio: @3506811888 (con el @ obligatorio).`;
+   - Transferencia / Llave Bre-B: Alias universal obligatorio: @3506811888 (con el @ obligatorio).
+5. PEDIDOS COMPLEJOS CON VARIOS PRODUCTOS Y VARIAS PARADAS (RESTAURANTE + TIENDA, ETC.):
+   - Un solo mensaje o audio puede traer VARIOS ítems y VARIOS sitios (ej: 'una carne molida de Maye de 13.000 y de la tienda una Coca-Cola de litro y medio, una caja de cigarrillos Time y una caja de cerveza').
+   - Descompón SIEMPRE en lista: por cada parada (comercio o tienda) los ítems, cantidades y el precio si el cliente lo dijo. Cada comercio distinto es 1 parada ($3.000 1 parada | $5.000 2 paradas | $8.000 3 paradas).
+   - Responde con un resumen corto en lista (parada 1, parada 2, domicilio estimado) y haz UNA SOLA pregunta por lo que falte (marca o variante, dirección de entrega o método de pago). NUNCA reinicies la conversación ni pidas elegir entre mototaxi, comida o viaje cuando el cliente ya dijo claramente qué quiere.
+   - Recuerda lo dicho en mensajes y audios anteriores de esta conversación. Si el cliente corrige un dato (marca, cantidad, producto), actualiza SOLO ese ítem y conserva el resto del pedido.
+   - Cuando tengas ítems, paradas, dirección de entrega y método de pago, crea el pedido con <<<ORDER_CREATE:{...}>>> incluyendo TODOS los ítems en el arreglo items [{item, qty, price}] y delivery_fee según el número de paradas.`;
 
   let campaignBlock = '';
   try {
@@ -2347,7 +2460,7 @@ REGLAS SUPREMAS DE ATENCIÓN UNIVERSAL (TEXTO, AUDIO, MULTI-IDIOMA Y BOTONES):
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 35000);
 
-      const response = await fetch('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', {
+      const response = await geminiOpenAIFetch({
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${process.env.LLM_API_KEY}`,
@@ -2417,10 +2530,17 @@ REGLAS SUPREMAS DE ATENCIÓN UNIVERSAL (TEXTO, AUDIO, MULTI-IDIOMA Y BOTONES):
 
     } catch (error: any) {
       console.error(`[LLM ERROR]:`, error.message);
-      retries++;
+      // El helper ya reintentó y probó modelos alternos: no encadenar más intentos si no hay cupo.
+      if (error.status === 429 || geminiIsDown()) { retries = 3; } else { retries++; }
       if (retries >= 3) {
         const fallbackButtons = getSmartContextButtons('', cleanText);
-        await safeReply(ctx, '¡Qué pena contigo! Tenemos muchos pedidos en fila. ¿Me dices si deseas mototaxi, comida o viaje intermunicipal? Elige una opción abajo o escríbeme directamente:', fallbackButtons);
+        await safeReply(
+          ctx,
+          '⚠️ Tuve una falla técnica momentánea y no pude procesar tu mensaje. Ya avisé al equipo de Fonsi para que te atiendan. Si prefieres, vuelve a escribirme en unos minutos o elige una opción abajo:',
+          fallbackButtons
+        );
+        await alertFailedOrder(userId, userName, cleanText);
+        await alertGeminiProblem(`Último error: ${String(error.message || '').slice(0, 300)}`);
       } else {
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
@@ -2450,6 +2570,16 @@ bot.on(['voice', 'audio'], async (ctx) => {
     const audioUrl = fileLink.href;
 
     const transcription = await transcribeAudio(audioUrl, voice.mime_type);
+
+    if ((!transcription || transcription.trim().length === 0) && geminiIsDown()) {
+      await alertGeminiProblem('Falló la transcripción de una nota de voz por cupo/servicio de Gemini.');
+      await alertFailedOrder(userId, (ctx.from as any)?.first_name || 'Cliente', '[Nota de voz sin transcribir por falla de IA]');
+      return safeReply(
+        ctx,
+        '🎤 Recibí tu nota de voz, pero tuve una falla técnica momentánea y no pude escucharla. Ya avisé al equipo. ¿Me la puedes escribir o intentar de nuevo en unos minutos?',
+        getSmartContextButtons('', '')
+      );
+    }
 
     if (!transcription || transcription.trim().length === 0) {
       return safeReply(
