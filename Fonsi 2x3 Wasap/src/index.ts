@@ -156,6 +156,72 @@ function buildActiveCourierMenu(courier: any): string {
   );
 }
 
+// ==========================================
+// CAPA DE RESILIENCIA GEMINI (WhatsApp: Cuota 429 / Fallback Flash-Lite)
+// ==========================================
+const GEMINI_MODELS: string[] = [
+  process.env.LLM_MODEL || 'gemini-2.5-flash',
+  ...(process.env.LLM_FALLBACK_MODELS || 'gemini-2.5-flash-lite').split(',').map((s) => s.trim()).filter(Boolean)
+].filter((m, i, arr) => m && arr.indexOf(m) === i);
+
+const geminiCooldown = new Map<string, number>();
+let geminiLastStatus = 200;
+
+const sleepMs = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function geminiFetchWithFallback(build: (model: string) => { url: string; init: any }): Promise<Response> {
+  let lastRes: Response | null = null;
+  for (const model of GEMINI_MODELS) {
+    if ((geminiCooldown.get(model) || 0) > Date.now()) continue;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const { url, init } = build(model);
+      const res = await fetch(url, init);
+      if (res.ok) {
+        geminiLastStatus = 200;
+        return res;
+      }
+      lastRes = res;
+      geminiLastStatus = res.status;
+      if (res.status === 429) {
+        let bodyText = '';
+        try { bodyText = await res.clone().text(); } catch {}
+        const m = bodyText.match(/retry in ([\d.]+)s|"retryDelay":\s*"(\d+)s"/i);
+        const secs = m ? parseFloat(m[1] || m[2]) : 60;
+        const coolSecs = Math.min(secs, 3600);
+        geminiCooldown.set(model, Date.now() + coolSecs * 1000);
+        console.warn(`⚠️ [GEMINI-WASAP] ${model} sin cupo. Cooldown ${Math.round(coolSecs)}s. Probando siguiente modelo.`);
+        break;
+      }
+      if (res.status >= 500) {
+        await sleepMs(1500 * (attempt + 1));
+        continue;
+      }
+      return res;
+    }
+  }
+  if (lastRes) return lastRes;
+  geminiLastStatus = 429;
+  return new Response(
+    JSON.stringify({ error: { code: 429, message: 'Cupo de Gemini agotado en WhatsApp.' } }),
+    { status: 429, headers: { 'Content-Type': 'application/json' } }
+  );
+}
+
+function geminiNativeFetchWasap(apiKey: string, init: any): Promise<Response> {
+  return geminiFetchWithFallback((model) => ({
+    url: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    init
+  }));
+}
+
+function geminiOpenAIFetchWasap(init: any): Promise<Response> {
+  const baseBody = JSON.parse(init.body);
+  return geminiFetchWithFallback((model) => ({
+    url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+    init: { ...init, body: JSON.stringify({ ...baseBody, model }) }
+  }));
+}
+
 // Transcripción y comprensión de Audio con Gemini 2.5 Flash
 async function transcribeAudioBuffer(buffer: Buffer, mimeType: string): Promise<string | null> {
   const apiKey = process.env.LLM_API_KEY;
@@ -163,8 +229,8 @@ async function transcribeAudioBuffer(buffer: Buffer, mimeType: string): Promise<
   try {
     const base64Audio = buffer.toString('base64');
     const cleanMime = mimeType.split(';')[0].trim() || 'audio/ogg';
-    const resp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+    const resp = await geminiNativeFetchWasap(
+      apiKey,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -213,8 +279,8 @@ async function analyzeReceiptBuffer(buffer: Buffer, mimeType: string): Promise<a
 
   try {
     const base64Img = buffer.toString('base64');
-    const resp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+    const resp = await geminiNativeFetchWasap(
+      apiKey,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -380,10 +446,10 @@ ${roleNote}`;
 
   const history = chatHistories.get(senderPhone) || [];
   history.push({ role: 'user', content: userMessage });
-  if (history.length > 10) history.splice(0, history.length - 10);
+  if (history.length > 6) history.splice(0, history.length - 6);
 
   try {
-    const response = await fetch('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', {
+    const response = await geminiOpenAIFetchWasap({
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -894,10 +960,26 @@ async function handleIncomingMessage(sock: ReturnType<typeof makeWASocket>, msg:
     return;
   }
 
-  // Atajos numéricos rápidos del menú de cliente
+  // Atajos numéricos rápidos del menú de cliente (Bypass IA: Ahorro 100% tokens en consulta de comercios)
   if (clean === '1') {
-    const reply = await askFonsiAI(localPhone, pushName, 'Quiero pedir un domicilio de comida o encargo, muéstrame los restaurantes aliados disponibles hoy.', courier);
-    await sock.sendMessage(remoteJid, { text: reply });
+    try {
+      const mRes = await pool.query(
+        "SELECT name, category, address FROM merchants WHERE is_active = true ORDER BY name ASC LIMIT 10"
+      );
+      let listMsg = "🍔 *RESTAURANTES Y COMERCIOS ALIADOS EN FONSECA*\n\n";
+      if (mRes.rows.length > 0) {
+        mRes.rows.forEach((m, idx) => {
+          listMsg += `${idx + 1}️⃣ *${m.name}* (${m.category || 'Comidas'})\n`;
+        });
+      } else {
+        listMsg += "• Restaurante Maye (Almuerzos corrientes y platos típicos)\n• Don Jediondo\n• La Fogata\n• Asadero El Paisa\n• Compras en Tienda / Droguería\n";
+      }
+      listMsg += "\n🛵 *Tarifa:* $3.000 (1 parada) | $5.000 (2 paradas)\n";
+      listMsg += "👉 Escríbeme o envíame una nota de voz con lo que deseas pedir y el restaurante/tienda:";
+      await sock.sendMessage(remoteJid, { text: listMsg });
+    } catch (e) {
+      await sock.sendMessage(remoteJid, { text: "🍔 *Restaurantes Disponibles Hoy:*\n• Restaurante Maye\n• La Fogata\n• Asadero El Paisa\n\n¿Qué te gustaría pedir?" });
+    }
     return;
   }
 
